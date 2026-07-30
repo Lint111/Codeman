@@ -586,7 +586,9 @@ Object.assign(CodemanApp.prototype, {
     // Only open windows for agents that belong to a Codeman-managed session tab.
     // Agents from external Claude sessions (not tracked by Codeman) should not pop up.
     if (agent.sessionId) {
-      const hasMatchingTab = Array.from(this.sessions.values()).some((s) => s.claudeSessionId === agent.sessionId);
+      const hasMatchingTab = Array.from(this.sessions).some(([sessionId, session]) =>
+        this.isSubagentSessionMatch(sessionId, session, agent.sessionId)
+      );
       if (!hasMatchingTab) return;
     }
     if (focusFileBrowser) this.focusFileBrowserSubagent?.(agentId);

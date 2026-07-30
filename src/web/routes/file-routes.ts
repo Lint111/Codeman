@@ -282,7 +282,8 @@ function getKnownSessionConversationId(ctx: SessionPort & ConfigPort, sessionId:
   if (liveSession) return liveSession.claudeSessionId || liveSession.id;
 
   const stored = ctx.store.getSession(sessionId) as
-    { id?: string; claudeSessionId?: string; resumeSessionId?: string } | undefined;
+    | { id?: string; claudeSessionId?: string; resumeSessionId?: string }
+    | undefined;
   return stored?.claudeSessionId || stored?.resumeSessionId || stored?.id || sessionId;
 }
 
@@ -493,7 +494,8 @@ async function resolveFileBrowserWorkingDir(
 function resolveFileBrowserContextWorkingDir(
   sessionWorkingDir: string,
   agentId?: string,
-  sessionConversationId?: string
+  sessionConversationId?: string,
+  sessionId?: string
 ): string {
   if (!agentId) return sessionWorkingDir;
 
@@ -502,9 +504,15 @@ function resolveFileBrowserContextWorkingDir(
     throw new Error('Subagent workspace is unavailable');
   }
   const sessionProjectHash = subagentWatcher.getProjectHashForDir(sessionWorkingDir);
-  const belongsToSession = sessionConversationId
-    ? agent.sessionId === sessionConversationId
-    : agent.projectHash === sessionProjectHash || resolve(agent.workingDir) === resolve(sessionWorkingDir);
+  const restoredId = [sessionConversationId, sessionId].find((id) => id?.startsWith('restored-'));
+  const restoredPrefix = restoredId?.match(/^restored-([0-9a-f]{8,})$/i)?.[1] || '';
+  const belongsToSession =
+    sessionConversationId || sessionId
+      ? agent.sessionId === sessionConversationId ||
+        agent.sessionId === sessionId ||
+        (restoredPrefix.length >= 8 &&
+          (agent.sessionId === restoredPrefix || agent.sessionId.startsWith(`${restoredPrefix}-`)))
+      : agent.projectHash === sessionProjectHash || resolve(agent.workingDir) === resolve(sessionWorkingDir);
   if (!belongsToSession) {
     throw new Error('Subagent does not belong to this session');
   }
@@ -516,9 +524,15 @@ async function resolveFileBrowserRequestWorkingDir(
   scope: string | undefined,
   agentId: string | undefined,
   sessionConversationId: string | undefined,
+  sessionId: string | undefined,
   req: FastifyRequest
 ): Promise<string> {
-  const contextWorkingDir = resolveFileBrowserContextWorkingDir(sessionWorkingDir, agentId, sessionConversationId);
+  const contextWorkingDir = resolveFileBrowserContextWorkingDir(
+    sessionWorkingDir,
+    agentId,
+    sessionConversationId,
+    sessionId
+  );
   return resolveFileBrowserWorkingDir(contextWorkingDir, scope, req);
 }
 
@@ -650,7 +664,8 @@ export function registerFileRoutes(app: FastifyInstance, ctx: SessionPort & Even
       const contextWorkingDir = resolveFileBrowserContextWorkingDir(
         session.workingDir,
         agentId,
-        session.claudeSessionId || session.id
+        session.claudeSessionId || session.id,
+        session.id
       );
       const selectedRoot = await resolveFileBrowserWorkingDir(contextWorkingDir, scope, req);
       const user = getAuthUser(req);
@@ -681,6 +696,7 @@ export function registerFileRoutes(app: FastifyInstance, ctx: SessionPort & Even
         scope,
         agentId,
         session.claudeSessionId || session.id,
+        session.id,
         req
       );
       return {
@@ -715,6 +731,7 @@ export function registerFileRoutes(app: FastifyInstance, ctx: SessionPort & Even
         scope,
         agentId,
         session.claudeSessionId || session.id,
+        session.id,
         req
       );
       return {
@@ -919,6 +936,7 @@ export function registerFileRoutes(app: FastifyInstance, ctx: SessionPort & Even
         scope,
         agentId,
         session.claudeSessionId || session.id,
+        session.id,
         req
       );
     } catch (err) {
@@ -1068,6 +1086,7 @@ export function registerFileRoutes(app: FastifyInstance, ctx: SessionPort & Even
         scope,
         agentId,
         session.claudeSessionId || session.id,
+        session.id,
         req
       );
     } catch (err) {
@@ -1250,6 +1269,7 @@ export function registerFileRoutes(app: FastifyInstance, ctx: SessionPort & Even
         scope,
         agentId,
         session.claudeSessionId || session.id,
+        session.id,
         req
       );
     } catch (err) {
@@ -1510,6 +1530,7 @@ export function registerFileRoutes(app: FastifyInstance, ctx: SessionPort & Even
         scope,
         agentId,
         getKnownSessionConversationId(ctx, id),
+        id,
         req
       );
     } catch (err) {
@@ -1562,6 +1583,7 @@ export function registerFileRoutes(app: FastifyInstance, ctx: SessionPort & Even
         scope,
         agentId,
         getKnownSessionConversationId(ctx, id),
+        id,
         req
       );
     } catch (err) {

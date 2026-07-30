@@ -65,6 +65,12 @@ server resolves that ID through the watcher-owned metadata before applying the
 normal worktree scope and user-space checks. Client-supplied filesystem paths
 are never accepted as a substitute.
 
+Recovered mux sessions use runtime IDs such as `restored-7148e9de`, while the
+provider transcript retains the full UUID beginning with `7148e9de`. Codeman
+recognizes that minimum eight-character restored prefix as the same parent;
+ordinary sessions still require an exact conversation ID, so another
+conversation in the same repository is rejected.
+
 The File Viewer context key is `(sessionId, agentId)`. This key participates in
 request cancellation, stale-response checks, commit caches, repository
 polling, previews, and downloads. Selecting the parent tab, clicking the

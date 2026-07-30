@@ -303,9 +303,9 @@ describe('Mobile File Viewer', () => {
         });
       };
 
-      app.sessions.set('parent-session', {
-        id: 'parent-session',
-        claudeSessionId: 'claude-parent',
+      app.sessions.set('restored-7148e9de', {
+        id: 'restored-7148e9de',
+        claudeSessionId: 'restored-7148e9de',
         name: 'Parent',
         mode: 'claude',
         status: 'idle',
@@ -314,8 +314,7 @@ describe('Mobile File Viewer', () => {
       });
       app.subagents.set('agent-feature', {
         agentId: 'agent-feature',
-        sessionId: 'claude-parent',
-        parentSessionId: 'parent-session',
+        sessionId: '7148e9de-7673-48b8-bf38-6799e52c346a',
         description: 'Feature worker',
         workingDir: '/worktrees/agent-feature',
         status: 'active',
@@ -323,9 +322,9 @@ describe('Mobile File Viewer', () => {
         entryCount: 1,
         fileSize: 1,
       });
-      app.subagentParentMap.set('agent-feature', 'parent-session');
-      app.activeSessionId = 'parent-session';
-      app.fileBrowserSessionId = 'parent-session';
+      app.subagentParentMap.delete('agent-feature');
+      app.activeSessionId = 'restored-7148e9de';
+      app.fileBrowserSessionId = 'restored-7148e9de';
       app.fileBrowserAgentId = null;
       document.getElementById('fileBrowserPanel')?.classList.add('visible');
 
@@ -339,11 +338,11 @@ describe('Mobile File Viewer', () => {
       };
 
       requests.length = 0;
-      await app.focusFileBrowserSession('parent-session');
+      await app.focusFileBrowserSession('restored-7148e9de');
       const parentState = {
         agentId: app.fileBrowserAgentId,
         root: app.fileBrowserData?.root,
-        workingDir: app.sessions.get('parent-session')?.workingDir,
+        workingDir: app.sessions.get('restored-7148e9de')?.workingDir,
         requests: [...requests],
       };
 

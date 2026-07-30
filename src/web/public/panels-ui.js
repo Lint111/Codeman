@@ -1736,6 +1736,20 @@ Object.assign(CodemanApp.prototype, {
   // The sessionId IS the tab identifier (tabs have data-id="${sessionId}").
   // Once set, this association is PERMANENT and persisted across restarts.
 
+  isSubagentSessionMatch(sessionId, session, agentSessionId) {
+    if (!session || !agentSessionId) return false;
+    if (agentSessionId === session.claudeSessionId || agentSessionId === session.id) {
+      return true;
+    }
+    const restoredId = [sessionId, session.id, session.claudeSessionId]
+      .find((id) => id?.startsWith?.('restored-'));
+    const restoredPrefix = restoredId?.match(/^restored-([0-9a-f]{8,})$/i)?.[1] || '';
+    return (
+      restoredPrefix.length >= 8 &&
+      (agentSessionId === restoredPrefix || agentSessionId.startsWith(`${restoredPrefix}-`))
+    );
+  },
+
   /**
    * Find and assign the parent TAB for a subagent.
    *
@@ -1775,7 +1789,7 @@ Object.assign(CodemanApp.prototype, {
     // Strategy 1: Match via claudeSessionId (most accurate)
     if (agent.sessionId) {
       for (const [sessionId, session] of this.sessions) {
-        if (session.claudeSessionId === agent.sessionId) {
+        if (this.isSubagentSessionMatch(sessionId, session, agent.sessionId)) {
           // FOUND! Store this association PERMANENTLY
           this.setAgentParentSessionId(agentId, sessionId);
           this.updateSubagentWindowParent(agentId);
@@ -1829,9 +1843,12 @@ Object.assign(CodemanApp.prototype, {
         const storedSession = this.sessions.get(storedParent);
 
         // If the stored session doesn't have a matching claudeSessionId, try to find the real match
-        if (storedSession && storedSession.claudeSessionId !== agent.sessionId) {
+        if (
+          storedSession &&
+          !this.isSubagentSessionMatch(storedParent, storedSession, agent.sessionId)
+        ) {
           for (const [sessionId, session] of this.sessions) {
-            if (session.claudeSessionId === agent.sessionId) {
+            if (this.isSubagentSessionMatch(sessionId, session, agent.sessionId)) {
               // Found the real parent - update the association
               this.subagentParentMap.set(agentId, sessionId);
               agent.parentSessionId = sessionId;
@@ -2966,7 +2983,7 @@ Object.assign(CodemanApp.prototype, {
     }
     if (agent?.sessionId) {
       for (const [sessionId, session] of this.sessions) {
-        if (session.claudeSessionId === agent.sessionId) return sessionId;
+        if (this.isSubagentSessionMatch(sessionId, session, agent.sessionId)) return sessionId;
       }
     }
     return null;

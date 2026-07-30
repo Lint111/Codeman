@@ -189,6 +189,35 @@ describe('file-routes repository browsing', () => {
     });
   });
 
+  it('accepts the full conversation ID behind a restored session alias', async () => {
+    harness.ctx._session.id = 'restored-7148e9de';
+    vi.spyOn(subagentWatcher, 'getSubagent').mockReturnValue({
+      agentId: 'agent-restored',
+      sessionId: '7148e9de-7673-48b8-bf38-6799e52c346a',
+      projectHash: subagentWatcher.getProjectHashForDir(harness.ctx._session.workingDir),
+      filePath: '/tmp/agent-restored.jsonl',
+      startedAt: new Date().toISOString(),
+      lastActivityAt: Date.now(),
+      status: 'active',
+      toolCallCount: 0,
+      entryCount: 1,
+      fileSize: 1,
+      workingDir: repositoryRoot,
+    });
+
+    const response = await harness.app.inject({
+      method: 'GET',
+      url: `/api/sessions/${harness.ctx._sessionId}/files?scope=current&agentId=agent-restored&depth=2`,
+    });
+    expect(response.json()).toMatchObject({
+      success: true,
+      data: {
+        root: repositoryRoot,
+        tree: expect.arrayContaining([expect.objectContaining({ name: 'README.md', type: 'file' })]),
+      },
+    });
+  });
+
   it('rejects a subagent workspace from another parent session in the same project', async () => {
     vi.spyOn(subagentWatcher, 'getSubagent').mockReturnValue({
       agentId: 'agent-foreign',
