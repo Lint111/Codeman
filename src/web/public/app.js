@@ -608,6 +608,7 @@ class CodemanApp {
     this.fileBrowserRepositoryData = null;
     this.fileBrowserScopeId = 'current';
     this.fileBrowserSessionId = null;
+    this.fileBrowserAgentId = null;
     this.fileBrowserLoadGeneration = 0;
     this.fileBrowserAbortController = null;
     this.fileBrowserCommitCache = new Map();

@@ -78,10 +78,11 @@ async function flushAsyncScan(): Promise<void> {
 }
 
 // Helper to create mock JSONL entries as Claude Code produces them
-function createUserEntry(text: string, timestamp?: string): string {
+function createUserEntry(text: string, timestamp?: string, cwd?: string): string {
   return JSON.stringify({
     type: 'user',
     timestamp: timestamp || new Date().toISOString(),
+    cwd,
     message: {
       role: 'user',
       content: [{ type: 'text', text }],
@@ -280,6 +281,50 @@ describe('SubagentWatcher', () => {
       expect(discoveredHandler).toHaveBeenCalled();
       const info = discoveredHandler.mock.calls[0][0] as SubagentInfo;
       expect(info.agentId).toBe('abc123');
+    });
+
+    it('should retain an absolute workspace from transcript entries', async () => {
+      const workspace = '/repos/feature-worktree';
+      const lines = [createUserEntry('Implement the feature', undefined, workspace)];
+      const descRl = createMockRl();
+      const tailRl = createMockRl();
+      mockCreateInterface.mockReturnValueOnce(descRl).mockReturnValue(tailRl);
+      mockCreateReadStream.mockReturnValue({ destroy: vi.fn() });
+
+      mockExistsSync.mockReturnValue(true);
+      mockReaddirSync.mockImplementation((path: string) => {
+        if (path.includes('subagents')) return ['agent-workspace.jsonl'];
+        if (path.includes('session1')) return ['subagents'];
+        if (path.includes('project1')) return ['session1'];
+        return ['project1'];
+      });
+      mockStatSync.mockReturnValue({
+        isDirectory: () => true,
+        birthtime: new Date(),
+        mtime: new Date(),
+        size: 100,
+      });
+      mockReadFileSync.mockReturnValue(lines.join('\n'));
+
+      const updatedHandler = vi.fn();
+      watcher.on('subagent:updated', updatedHandler);
+      watcher.start();
+      await flushAsyncScan();
+
+      descRl.emit('close');
+      await vi.advanceTimersByTimeAsync(100);
+
+      for (const line of lines) tailRl.emit('line', line);
+      tailRl.emit('close');
+      await vi.advanceTimersByTimeAsync(100);
+
+      expect(watcher.getSubagent('workspace')?.workingDir).toBe(workspace);
+      expect(updatedHandler).toHaveBeenCalledWith(
+        expect.objectContaining({
+          agentId: 'workspace',
+          workingDir: workspace,
+        })
+      );
     });
 
     it('should skip malformed JSON lines', async () => {

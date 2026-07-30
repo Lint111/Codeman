@@ -8,9 +8,10 @@ import { execFileSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { registerFileRoutes } from '../../src/web/routes/file-routes.js';
 import { discoverGitRepository } from '../../src/git-repository-browser.js';
+import { subagentWatcher } from '../../src/subagent-watcher.js';
 import { createRouteTestHarness, type RouteTestHarness } from './_route-test-utils.js';
 
 function git(cwd: string, ...args: string[]): string {
@@ -54,6 +55,7 @@ describe('file-routes repository browsing', () => {
   });
 
   afterEach(async () => {
+    vi.restoreAllMocks();
     await harness.app.close();
     rmSync(fixtureRoot, { recursive: true, force: true });
     if (savedMultiUser === undefined) delete process.env.CODEMAN_MULTIUSER;
@@ -135,6 +137,80 @@ describe('file-routes repository browsing', () => {
     expect(response.json()).toMatchObject({
       success: false,
       error: expect.stringContaining('scope not found'),
+    });
+  });
+
+  it('roots repository browsing at an owned subagent workspace', async () => {
+    const agentRepositoryRoot = join(fixtureRoot, 'agent-repository');
+    mkdirSync(agentRepositoryRoot);
+    git(agentRepositoryRoot, 'init', '-b', 'agent-work');
+    git(agentRepositoryRoot, 'config', 'user.name', 'Codeman Test');
+    git(agentRepositoryRoot, 'config', 'user.email', 'codeman@example.invalid');
+    writeFileSync(join(agentRepositoryRoot, 'agent.txt'), 'subagent workspace\n');
+    git(agentRepositoryRoot, 'add', 'agent.txt');
+    git(agentRepositoryRoot, 'commit', '-m', 'agent workspace');
+
+    vi.spyOn(subagentWatcher, 'getSubagent').mockReturnValue({
+      agentId: 'agent-owned',
+      sessionId: harness.ctx._sessionId,
+      projectHash: subagentWatcher.getProjectHashForDir(harness.ctx._session.workingDir),
+      filePath: '/tmp/agent-owned.jsonl',
+      startedAt: new Date().toISOString(),
+      lastActivityAt: Date.now(),
+      status: 'active',
+      toolCallCount: 0,
+      entryCount: 1,
+      fileSize: 1,
+      workingDir: agentRepositoryRoot,
+    });
+
+    const repositoryResponse = await harness.app.inject({
+      method: 'GET',
+      url: `/api/sessions/${harness.ctx._sessionId}/repository?scope=current&agentId=agent-owned`,
+    });
+    expect(repositoryResponse.json()).toMatchObject({
+      success: true,
+      data: {
+        available: true,
+        repositoryRoot: agentRepositoryRoot,
+      },
+    });
+
+    const filesResponse = await harness.app.inject({
+      method: 'GET',
+      url: `/api/sessions/${harness.ctx._sessionId}/files?scope=current&agentId=agent-owned&depth=2`,
+    });
+    expect(filesResponse.json()).toMatchObject({
+      success: true,
+      data: {
+        root: agentRepositoryRoot,
+        tree: expect.arrayContaining([expect.objectContaining({ name: 'agent.txt', type: 'file' })]),
+      },
+    });
+  });
+
+  it('rejects a subagent workspace from another parent session in the same project', async () => {
+    vi.spyOn(subagentWatcher, 'getSubagent').mockReturnValue({
+      agentId: 'agent-foreign',
+      sessionId: 'other-session',
+      projectHash: subagentWatcher.getProjectHashForDir(harness.ctx._session.workingDir),
+      filePath: '/tmp/agent-foreign.jsonl',
+      startedAt: new Date().toISOString(),
+      lastActivityAt: Date.now(),
+      status: 'active',
+      toolCallCount: 0,
+      entryCount: 1,
+      fileSize: 1,
+      workingDir: fixtureRoot,
+    });
+
+    const response = await harness.app.inject({
+      method: 'GET',
+      url: `/api/sessions/${harness.ctx._sessionId}/files?scope=current&agentId=agent-foreign&depth=2`,
+    });
+    expect(response.json()).toMatchObject({
+      success: false,
+      error: expect.stringContaining('does not belong to this session'),
     });
   });
 

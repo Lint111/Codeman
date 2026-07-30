@@ -54,9 +54,35 @@ Unscoped file URLs retain the original `session.workingDir` confinement. This
 is load-bearing for attachments and existing API consumers: repository
 discovery must not silently broaden every session file route.
 
+### Subagent Context
+
+Selecting a dispatched subagent in Codeman's subagent panel, or focusing its
+floating window, temporarily changes the File Viewer context without mutating
+the parent `Session.workingDir`. Claude transcript entries provide the
+subagent's absolute `cwd`; the watcher retains it as `SubagentInfo.workingDir`.
+The browser sends the opaque `agentId` with File Viewer requests, and the
+server resolves that ID through the watcher-owned metadata before applying the
+normal worktree scope and user-space checks. Client-supplied filesystem paths
+are never accepted as a substitute.
+
+The File Viewer context key is `(sessionId, agentId)`. This key participates in
+request cancellation, stale-response checks, commit caches, repository
+polling, previews, and downloads. Selecting the parent tab, clicking the
+parent name in a subagent window, or minimizing the focused subagent restores
+the parent session context and its configured work path. Restoring floating
+windows after startup does not implicitly change File Viewer focus.
+
+Provider integrations can use the same contract when their subagent registry
+exposes a stable agent ID, parent-session association, and server-observed
+absolute workspace. Providers must not pass an arbitrary workspace from the
+browser.
+
 ## HTTP API
 
 All routes require access to the owning session through `findSessionOrFail`.
+File Viewer routes accept an optional `agentId`; when present, its
+server-resolved workspace becomes the base before the existing `scope`
+resolution runs.
 
 | Route                                                                   | Purpose                                        |
 | ----------------------------------------------------------------------- | ---------------------------------------------- |
@@ -81,9 +107,10 @@ client-side filename/similarity guessing.
 ## Client Lifecycle
 
 `loadFileBrowser()` owns an `AbortController` and monotonically increasing
-generation. A response may paint only when its generation, session ID, and
-active tab still match. This prevents a slower previous session from replacing
-the selected session's tree or repository state.
+generation. A response may paint only when its generation, session ID,
+subagent ID, and active tab still match. This prevents a slower previous
+session or subagent from replacing the selected context's tree or repository
+state.
 
 Switching sessions synchronously changes File Viewer ownership and resets scope
 to `current` before terminal resize/history loading begins. An open viewer
@@ -106,7 +133,8 @@ safe-area-aware bottom sheet. Diff preview uses the full visual viewport.
   worktree, nested discovery, status/history/diffs, rename parsing, and scope
   traversal rejection.
 - `test/routes/file-routes-repository.test.ts`: session route ownership and
-  scoped-vs-legacy file access.
+  scoped-vs-legacy file access, including owned and foreign subagent contexts.
 - `test/mobile/file-viewer.test.ts`: stale tab-switch response rejection,
-  worktree selector defaults, Changes and History interactions, compact/full
-  diff rendering, and phone viewport bounds.
+  parent/subagent context restoration, worktree selector defaults, Changes and
+  History interactions, compact/full diff rendering, and phone viewport
+  bounds.

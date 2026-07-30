@@ -188,7 +188,7 @@ Object.assign(CodemanApp.prototype, {
       // Only restore window if agent exists, is recent, and is still active/idle
       const agentAge = agent?.startedAt ? now - agent.startedAt : Infinity;
       if (agent && agent.status !== 'completed' && agentAge < maxAgeMs) {
-        this.openSubagentWindow(agentId);
+        this.openSubagentWindow(agentId, { focusFileBrowser: false });
         // Restore position if saved (with viewport bounds check)
         if (position) {
           const windowData = this.subagentWindows.get(agentId);
@@ -548,7 +548,8 @@ Object.assign(CodemanApp.prototype, {
   // Subagent Floating Windows
   // ═══════════════════════════════════════════════════════════════
 
-  openSubagentWindow(agentId) {
+  openSubagentWindow(agentId, options = {}) {
+    const focusFileBrowser = options.focusFileBrowser !== false;
     // If window already exists, focus it
     if (this.subagentWindows.has(agentId)) {
       const existing = this.subagentWindows.get(agentId);
@@ -558,7 +559,10 @@ Object.assign(CodemanApp.prototype, {
 
       // If window is hidden (different tab) and activeTabOnly is enabled, switch to parent tab
       if (existing.hidden && agent?.parentSessionId && activeTabOnly) {
-        this.selectSession(agent.parentSessionId);
+        Promise.resolve(this.selectSession(agent.parentSessionId)).then(() => {
+          this.restoreSubagentWindow(agentId);
+          if (focusFileBrowser) this.focusFileBrowserSubagent?.(agentId);
+        });
         return;
       }
 
@@ -572,6 +576,7 @@ Object.assign(CodemanApp.prototype, {
       if (existing.minimized) {
         this.restoreSubagentWindow(agentId);
       }
+      if (focusFileBrowser) this.focusFileBrowserSubagent?.(agentId);
       return;
     }
 
@@ -584,6 +589,7 @@ Object.assign(CodemanApp.prototype, {
       const hasMatchingTab = Array.from(this.sessions.values()).some((s) => s.claudeSessionId === agent.sessionId);
       if (!hasMatchingTab) return;
     }
+    if (focusFileBrowser) this.focusFileBrowserSubagent?.(agentId);
 
     // Calculate final position - grid layout to avoid overlaps
     const windowCount = this.subagentWindows.size;
@@ -699,7 +705,7 @@ Object.assign(CodemanApp.prototype, {
       parentSessionId && parentSessionName
         ? `<div class="subagent-window-parent" data-parent-session="${parentSessionId}">
           <span class="parent-label">from</span>
-          <span class="parent-name" onclick="app.selectSession(${escapeHtml(JSON.stringify(parentSessionId))})">${escapeHtml(parentSessionName)}</span>
+          <span class="parent-name" onclick="app.returnToParentSession(${escapeHtml(JSON.stringify(parentSessionId))})">${escapeHtml(parentSessionName)}</span>
         </div>`
         : '';
 
@@ -798,8 +804,10 @@ Object.assign(CodemanApp.prototype, {
     }
 
     // Focus on click
-    win.addEventListener('mousedown', () => {
+    win.addEventListener('mousedown', (event) => {
       win.style.zIndex = ++this.subagentWindowZIndex;
+      if (event.target?.closest?.('button, .subagent-window-parent')) return;
+      this.focusFileBrowserSubagent?.(agentId);
     });
 
     // Update connection lines when window is resized
@@ -869,6 +877,9 @@ Object.assign(CodemanApp.prototype, {
 
       // Update tab badge to show minimized agents
       this.renderSessionTabs();
+    }
+    if (this.fileBrowserAgentId === agentId) {
+      this.focusFileBrowserSession?.(parentSessionId);
     }
 
     // Persist the state change
@@ -1063,6 +1074,7 @@ Object.assign(CodemanApp.prototype, {
         windowData.element.style.display = 'flex';
         windowData.element.style.zIndex = ++this.subagentWindowZIndex;
         windowData.hidden = false;
+        this.focusFileBrowserSubagent?.(agentId);
       }
       windowData.minimized = false;
 

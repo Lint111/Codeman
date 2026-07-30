@@ -37,6 +37,7 @@ import {
   getGitRepositoryOverview,
   resolveRepositoryBrowseRoot,
 } from '../../git-repository-browser.js';
+import { subagentWatcher } from '../../subagent-watcher.js';
 import {
   CASES_DIR,
   canAccessOwned,
@@ -276,6 +277,15 @@ function getKnownSessionWorkingDir(
   return undefined;
 }
 
+function getKnownSessionConversationId(ctx: SessionPort & ConfigPort, sessionId: string): string | undefined {
+  const liveSession = ctx.sessions.get(sessionId);
+  if (liveSession) return liveSession.claudeSessionId || liveSession.id;
+
+  const stored = ctx.store.getSession(sessionId) as
+    { id?: string; claudeSessionId?: string; resumeSessionId?: string } | undefined;
+  return stored?.claudeSessionId || stored?.resumeSessionId || stored?.id || sessionId;
+}
+
 // Persisted sessions carry the private (externalPath-bearing) history under a
 // `__attachmentHistory` key so the list route can re-register external files.
 type StoredSessionWithPrivateAttachmentHistory = SessionState & {
@@ -480,8 +490,43 @@ async function resolveFileBrowserWorkingDir(
   return resolvedRoot;
 }
 
-function appendFileBrowserScope(url: string, scope?: string): string {
-  return scope ? `${url}${url.includes('?') ? '&' : '?'}scope=${encodeURIComponent(scope)}` : url;
+function resolveFileBrowserContextWorkingDir(
+  sessionWorkingDir: string,
+  agentId?: string,
+  sessionConversationId?: string
+): string {
+  if (!agentId) return sessionWorkingDir;
+
+  const agent = subagentWatcher.getSubagent(agentId);
+  if (!agent?.workingDir || !isAbsolute(agent.workingDir)) {
+    throw new Error('Subagent workspace is unavailable');
+  }
+  const sessionProjectHash = subagentWatcher.getProjectHashForDir(sessionWorkingDir);
+  const belongsToSession = sessionConversationId
+    ? agent.sessionId === sessionConversationId
+    : agent.projectHash === sessionProjectHash || resolve(agent.workingDir) === resolve(sessionWorkingDir);
+  if (!belongsToSession) {
+    throw new Error('Subagent does not belong to this session');
+  }
+  return agent.workingDir;
+}
+
+async function resolveFileBrowserRequestWorkingDir(
+  sessionWorkingDir: string,
+  scope: string | undefined,
+  agentId: string | undefined,
+  sessionConversationId: string | undefined,
+  req: FastifyRequest
+): Promise<string> {
+  const contextWorkingDir = resolveFileBrowserContextWorkingDir(sessionWorkingDir, agentId, sessionConversationId);
+  return resolveFileBrowserWorkingDir(contextWorkingDir, scope, req);
+}
+
+function appendFileBrowserContext(url: string, scope?: string, agentId?: string): string {
+  const parsed = new URL(url, 'http://codeman.local');
+  if (scope) parsed.searchParams.set('scope', scope);
+  if (agentId) parsed.searchParams.set('agentId', agentId);
+  return `${parsed.pathname}${parsed.search}`;
 }
 
 function getSessionAttachmentHistory(
@@ -599,12 +644,17 @@ export function registerFileRoutes(app: FastifyInstance, ctx: SessionPort & Even
   // a server-resolved session path; clients select only opaque worktree ids.
   app.get('/api/sessions/:id/repository', async (req) => {
     const { id } = req.params as { id: string };
-    const { scope } = req.query as { scope?: string };
+    const { scope, agentId } = req.query as { scope?: string; agentId?: string };
     const session = findSessionOrFail(ctx, id, req);
     try {
-      const selectedRoot = await resolveFileBrowserWorkingDir(session.workingDir, scope, req);
+      const contextWorkingDir = resolveFileBrowserContextWorkingDir(
+        session.workingDir,
+        agentId,
+        session.claudeSessionId || session.id
+      );
+      const selectedRoot = await resolveFileBrowserWorkingDir(contextWorkingDir, scope, req);
       const user = getAuthUser(req);
-      const overview = await getGitRepositoryOverview(session.workingDir, scope);
+      const overview = await getGitRepositoryOverview(contextWorkingDir, scope);
       overview.worktrees = overview.worktrees.filter((worktree) => isWorkingDirAllowed(user, worktree.path));
       if (overview.repositoryRoot && !isWorkingDirAllowed(user, overview.repositoryRoot)) {
         overview.repositoryRoot = selectedRoot;
@@ -620,13 +670,19 @@ export function registerFileRoutes(app: FastifyInstance, ctx: SessionPort & Even
 
   app.get('/api/sessions/:id/repository/commit', async (req) => {
     const { id } = req.params as { id: string };
-    const { scope, commit } = req.query as { scope?: string; commit?: string };
+    const { scope, commit, agentId } = req.query as { scope?: string; commit?: string; agentId?: string };
     const session = findSessionOrFail(ctx, id, req);
     if (!commit) {
       return createErrorResponse(ApiErrorCode.INVALID_INPUT, 'Missing commit parameter');
     }
     try {
-      const selectedRoot = await resolveFileBrowserWorkingDir(session.workingDir, scope, req);
+      const selectedRoot = await resolveFileBrowserRequestWorkingDir(
+        session.workingDir,
+        scope,
+        agentId,
+        session.claudeSessionId || session.id,
+        req
+      );
       return {
         success: true,
         data: await getGitCommitDetails(selectedRoot, 'current', commit),
@@ -642,17 +698,25 @@ export function registerFileRoutes(app: FastifyInstance, ctx: SessionPort & Even
       scope,
       path: filePath,
       commit,
+      agentId,
     } = req.query as {
       scope?: string;
       path?: string;
       commit?: string;
+      agentId?: string;
     };
     const session = findSessionOrFail(ctx, id, req);
     if (!filePath) {
       return createErrorResponse(ApiErrorCode.INVALID_INPUT, 'Missing path parameter');
     }
     try {
-      const selectedRoot = await resolveFileBrowserWorkingDir(session.workingDir, scope, req);
+      const selectedRoot = await resolveFileBrowserRequestWorkingDir(
+        session.workingDir,
+        scope,
+        agentId,
+        session.claudeSessionId || session.id,
+        req
+      );
       return {
         success: true,
         data: await getGitDiffDetail(selectedRoot, 'current', filePath, commit),
@@ -838,10 +902,11 @@ export function registerFileRoutes(app: FastifyInstance, ctx: SessionPort & Even
   // File tree listing
   app.get('/api/sessions/:id/files', async (req) => {
     const { id } = req.params as { id: string };
-    const { depth, showHidden, scope } = req.query as {
+    const { depth, showHidden, scope, agentId } = req.query as {
       depth?: string;
       showHidden?: string;
       scope?: string;
+      agentId?: string;
     };
     const session = findSessionOrFail(ctx, id, req);
 
@@ -849,7 +914,13 @@ export function registerFileRoutes(app: FastifyInstance, ctx: SessionPort & Even
     const includeHidden = showHidden === 'true';
     let workingDir: string;
     try {
-      workingDir = await resolveFileBrowserWorkingDir(session.workingDir, scope, req);
+      workingDir = await resolveFileBrowserRequestWorkingDir(
+        session.workingDir,
+        scope,
+        agentId,
+        session.claudeSessionId || session.id,
+        req
+      );
     } catch (err) {
       return createErrorResponse(ApiErrorCode.INVALID_INPUT, getErrorMessage(err));
     }
@@ -976,11 +1047,13 @@ export function registerFileRoutes(app: FastifyInstance, ctx: SessionPort & Even
       lines,
       raw,
       scope,
+      agentId,
     } = req.query as {
       path?: string;
       lines?: string;
       raw?: string;
       scope?: string;
+      agentId?: string;
     };
     const session = findSessionOrFail(ctx, id, req);
 
@@ -990,7 +1063,13 @@ export function registerFileRoutes(app: FastifyInstance, ctx: SessionPort & Even
 
     let workingDir: string;
     try {
-      workingDir = await resolveFileBrowserWorkingDir(session.workingDir, scope, req);
+      workingDir = await resolveFileBrowserRequestWorkingDir(
+        session.workingDir,
+        scope,
+        agentId,
+        session.claudeSessionId || session.id,
+        req
+      );
     } catch (err) {
       return createErrorResponse(ApiErrorCode.INVALID_INPUT, getErrorMessage(err));
     }
@@ -1061,9 +1140,10 @@ export function registerFileRoutes(app: FastifyInstance, ctx: SessionPort & Even
             ? 'audio'
             : null;
 
-      const fileRawUrl = appendFileBrowserScope(
+      const fileRawUrl = appendFileBrowserContext(
         `/api/sessions/${id}/file-raw?path=${encodeURIComponent(filePath)}`,
-        scope
+        scope,
+        agentId
       );
 
       if (raw === 'true' || mediaType || otherBinaryExts.has(ext)) {
@@ -1149,10 +1229,12 @@ export function registerFileRoutes(app: FastifyInstance, ctx: SessionPort & Even
       path: filePath,
       download,
       scope,
+      agentId,
     } = req.query as {
       path?: string;
       download?: string;
       scope?: string;
+      agentId?: string;
     };
     const session = findSessionOrFail(ctx, id, req);
 
@@ -1163,7 +1245,13 @@ export function registerFileRoutes(app: FastifyInstance, ctx: SessionPort & Even
 
     let workingDir: string;
     try {
-      workingDir = await resolveFileBrowserWorkingDir(session.workingDir, scope, req);
+      workingDir = await resolveFileBrowserRequestWorkingDir(
+        session.workingDir,
+        scope,
+        agentId,
+        session.claudeSessionId || session.id,
+        req
+      );
     } catch (err) {
       reply.code(400).send(createErrorResponse(ApiErrorCode.INVALID_INPUT, getErrorMessage(err)));
       return;
@@ -1398,7 +1486,15 @@ export function registerFileRoutes(app: FastifyInstance, ctx: SessionPort & Even
   // are converted to PDF via LibreOffice; PDF/PNG/text preview through file-raw.
   app.get('/api/sessions/:id/file-preview', async (req, reply) => {
     const { id } = req.params as { id: string };
-    const { path: filePath, scope } = req.query as { path?: string; scope?: string };
+    const {
+      path: filePath,
+      scope,
+      agentId,
+    } = req.query as {
+      path?: string;
+      scope?: string;
+      agentId?: string;
+    };
     const sessionWorkingDir = getKnownSessionWorkingDir(ctx, id, reply, req);
     if (!sessionWorkingDir) return;
 
@@ -1409,7 +1505,13 @@ export function registerFileRoutes(app: FastifyInstance, ctx: SessionPort & Even
 
     let workingDir: string;
     try {
-      workingDir = await resolveFileBrowserWorkingDir(sessionWorkingDir, scope, req);
+      workingDir = await resolveFileBrowserRequestWorkingDir(
+        sessionWorkingDir,
+        scope,
+        agentId,
+        getKnownSessionConversationId(ctx, id),
+        req
+      );
     } catch (err) {
       reply.code(400).send(createErrorResponse(ApiErrorCode.INVALID_INPUT, getErrorMessage(err)));
       return;
@@ -1425,7 +1527,7 @@ export function registerFileRoutes(app: FastifyInstance, ctx: SessionPort & Even
 
     if (ext !== 'docx' && ext !== 'pptx') {
       reply.redirect(
-        appendFileBrowserScope(`/api/sessions/${id}/file-raw?path=${encodeURIComponent(filePath)}`, scope)
+        appendFileBrowserContext(`/api/sessions/${id}/file-raw?path=${encodeURIComponent(filePath)}`, scope, agentId)
       );
       return;
     }
@@ -1436,7 +1538,15 @@ export function registerFileRoutes(app: FastifyInstance, ctx: SessionPort & Even
   // Serve a first-page thumbnail for a workspace-relative path.
   app.get('/api/sessions/:id/file-thumbnail', async (req, reply) => {
     const { id } = req.params as { id: string };
-    const { path: filePath, scope } = req.query as { path?: string; scope?: string };
+    const {
+      path: filePath,
+      scope,
+      agentId,
+    } = req.query as {
+      path?: string;
+      scope?: string;
+      agentId?: string;
+    };
     const sessionWorkingDir = getKnownSessionWorkingDir(ctx, id, reply, req);
     if (!sessionWorkingDir) return;
 
@@ -1447,7 +1557,13 @@ export function registerFileRoutes(app: FastifyInstance, ctx: SessionPort & Even
 
     let workingDir: string;
     try {
-      workingDir = await resolveFileBrowserWorkingDir(sessionWorkingDir, scope, req);
+      workingDir = await resolveFileBrowserRequestWorkingDir(
+        sessionWorkingDir,
+        scope,
+        agentId,
+        getKnownSessionConversationId(ctx, id),
+        req
+      );
     } catch (err) {
       reply.code(400).send(createErrorResponse(ApiErrorCode.INVALID_INPUT, getErrorMessage(err)));
       return;

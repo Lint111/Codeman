@@ -32,7 +32,7 @@ import { watch, existsSync, FSWatcher } from 'node:fs';
 import { createReadStream } from 'node:fs';
 import { createInterface } from 'node:readline';
 import { homedir } from 'node:os';
-import { join, basename, dirname } from 'node:path';
+import { join, basename, dirname, isAbsolute } from 'node:path';
 import { execFile } from 'node:child_process';
 import { readFile, readdir, stat as statAsync } from 'node:fs/promises';
 import { PENDING_TOOL_CALL_TTL_MS, MAX_PENDING_TOOL_CALLS, MAX_TRACKED_AGENTS } from './config/map-limits.js';
@@ -59,6 +59,7 @@ export interface SubagentInfo {
   totalInputTokens?: number; // Running total of input tokens
   totalOutputTokens?: number; // Running total of output tokens
   pid?: number; // Cached process ID for fast liveness checks
+  workingDir?: string; // Provider-reported workspace for file/repository browsing
 }
 
 export interface SubagentToolCall {
@@ -95,6 +96,7 @@ export interface SubagentTranscriptEntry {
   timestamp: string;
   agentId: string;
   sessionId: string;
+  cwd?: string;
   message?: {
     role: string;
     model?: string; // Model used for this message (e.g., "claude-sonnet-4-20250514")
@@ -1550,6 +1552,10 @@ export class SubagentWatcher extends EventEmitter {
     const info = this.agentInfo.get(agentId);
 
     if (info) {
+      if (entry.cwd && isAbsolute(entry.cwd) && entry.cwd !== info.workingDir) {
+        info.workingDir = entry.cwd;
+        this.emit('subagent:updated', info);
+      }
       this._processModelInfo(entry, info);
       this._processTokenInfo(entry, info);
 

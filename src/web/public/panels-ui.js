@@ -157,6 +157,7 @@ Object.assign(CodemanApp.prototype, {
 
   _onSubagentUpdated(data) {
     const existing = this.subagents.get(data.agentId);
+    const previousWorkingDir = existing?.workingDir;
     if (existing) {
       // Merge updated fields (especially description)
       Object.assign(existing, data);
@@ -169,6 +170,13 @@ Object.assign(CodemanApp.prototype, {
     if (this.subagentWindows.has(data.agentId)) {
       this.renderSubagentWindowContent(data.agentId);
       this.updateSubagentWindowHeader(data.agentId);
+    }
+    if (
+      this.activeSubagentId === data.agentId &&
+      data.workingDir &&
+      data.workingDir !== previousWorkingDir
+    ) {
+      this.focusFileBrowserSubagent(data.agentId, { force: true });
     }
   },
 
@@ -1501,6 +1509,7 @@ Object.assign(CodemanApp.prototype, {
     this.activeSubagentId = agentId;
     this.renderSubagentPanel();
     this.renderSubagentDetail();
+    return this.focusFileBrowserSubagent(agentId);
   },
 
   renderSubagentDetail() {
@@ -1901,7 +1910,7 @@ Object.assign(CodemanApp.prototype, {
       const nameEl = existingParent.querySelector('.parent-name');
       if (nameEl) {
         nameEl.textContent = parentName;
-        nameEl.onclick = () => this.selectSession(parentSessionId);
+        nameEl.onclick = () => this.returnToParentSession(parentSessionId);
       }
       return;
     }
@@ -1914,7 +1923,7 @@ Object.assign(CodemanApp.prototype, {
       parentDiv.dataset.parentSession = parentSessionId;
       parentDiv.innerHTML = `
         <span class="parent-label">from</span>
-        <span class="parent-name" onclick="app.selectSession(${escapeHtml(JSON.stringify(parentSessionId))})">${escapeHtml(parentName)}</span>
+        <span class="parent-name" onclick="app.returnToParentSession(${escapeHtml(JSON.stringify(parentSessionId))})">${escapeHtml(parentName)}</span>
       `;
       header.insertAdjacentElement('afterend', parentDiv);
     }
@@ -2947,11 +2956,49 @@ Object.assign(CodemanApp.prototype, {
   // File Browser Panel
   // ═══════════════════════════════════════════════════════════════
 
+  getFileBrowserSubagentParentSessionId(agentId) {
+    const storedParent = this.subagentParentMap.get(agentId);
+    if (storedParent && this.sessions.has(storedParent)) return storedParent;
+
+    const agent = this.subagents.get(agentId);
+    if (agent?.parentSessionId && this.sessions.has(agent.parentSessionId)) {
+      return agent.parentSessionId;
+    }
+    if (agent?.sessionId) {
+      for (const [sessionId, session] of this.sessions) {
+        if (session.claudeSessionId === agent.sessionId) return sessionId;
+      }
+    }
+    return null;
+  },
+
+  buildFileBrowserUrl(path, params = {}, agentId = this.fileBrowserAgentId) {
+    const query = new URLSearchParams();
+    for (const [key, value] of Object.entries(params)) {
+      if (value !== undefined && value !== null && value !== '') {
+        query.set(key, String(value));
+      }
+    }
+    if (agentId) query.set('agentId', agentId);
+    const encoded = query.toString();
+    return encoded ? `${path}?${encoded}` : path;
+  },
+
+  getFileBrowserCommitCacheKey(commit, agentId = this.fileBrowserAgentId) {
+    return `${agentId || 'parent'}:${this.fileBrowserScopeId}:${commit}`;
+  },
+
   resetFileBrowserSessionContext(sessionId, options = {}) {
-    if (!sessionId || (!options.force && this.fileBrowserSessionId === sessionId)) return false;
+    const agentId = Object.prototype.hasOwnProperty.call(options, 'agentId')
+      ? options.agentId || null
+      : this.fileBrowserAgentId || null;
+    const contextChanged =
+      this.fileBrowserSessionId !== sessionId || this.fileBrowserAgentId !== agentId;
+    if (!sessionId || (!options.force && !contextChanged)) return false;
 
     this.cancelFileBrowserDirectoryHold();
     this.closeFileBrowserDirectoryMenu();
+    this.closeFilePreview();
     this.fileBrowserAbortController?.abort();
     this.fileBrowserAbortController = null;
     this.fileBrowserLoadGeneration += 1;
@@ -2961,6 +3008,7 @@ Object.assign(CodemanApp.prototype, {
     }
 
     this.fileBrowserSessionId = sessionId;
+    this.fileBrowserAgentId = agentId;
     this.fileBrowserScopeId = 'current';
     this.fileBrowserData = null;
     this.fileBrowserRepositoryData = null;
@@ -2975,13 +3023,58 @@ Object.assign(CodemanApp.prototype, {
   },
 
   syncFileBrowserSession(sessionId, options = {}) {
-    if (!this.resetFileBrowserSessionContext(sessionId, options)) return null;
+    const contextOptions = {
+      ...options,
+      agentId: Object.prototype.hasOwnProperty.call(options, 'agentId')
+        ? options.agentId || null
+        : null,
+    };
+    if (!this.resetFileBrowserSessionContext(sessionId, contextOptions)) return null;
 
     const panel = this.$('fileBrowserPanel');
     if (panel?.classList.contains('visible')) {
-      return this.loadFileBrowser(sessionId, { scopeId: 'current' });
+      return this.loadFileBrowser(sessionId, {
+        scopeId: 'current',
+        agentId: contextOptions.agentId,
+      });
     }
     return null;
+  },
+
+  focusFileBrowserSubagent(agentId, options = {}) {
+    const agent = this.subagents.get(agentId);
+    const parentSessionId = this.getFileBrowserSubagentParentSessionId(agentId);
+    if (
+      !agent?.workingDir ||
+      !parentSessionId ||
+      parentSessionId !== this.activeSessionId
+    ) {
+      return null;
+    }
+    return this.syncFileBrowserSession(parentSessionId, {
+      agentId,
+      force: options.force === true,
+    });
+  },
+
+  focusFileBrowserSession(sessionId = this.activeSessionId) {
+    if (!sessionId) return null;
+    if (
+      this.activeSubagentId &&
+      this.getFileBrowserSubagentParentSessionId(this.activeSubagentId) === sessionId
+    ) {
+      this.activeSubagentId = null;
+      this.renderSubagentPanel();
+      this.renderSubagentDetail();
+    }
+    return this.syncFileBrowserSession(sessionId, { agentId: null });
+  },
+
+  returnToParentSession(sessionId) {
+    if (sessionId === this.activeSessionId) {
+      return this.focusFileBrowserSession(sessionId);
+    }
+    return this.selectSession(sessionId);
   },
 
   async loadFileBrowser(sessionId, options = {}) {
@@ -2990,10 +3083,16 @@ Object.assign(CodemanApp.prototype, {
     const treeEl = this.$('fileBrowserTree');
     if (!treeEl) return;
 
-    this.resetFileBrowserSessionContext(sessionId);
+    const requestedAgentId = Object.prototype.hasOwnProperty.call(options, 'agentId')
+      ? options.agentId || null
+      : this.fileBrowserSessionId === sessionId
+        ? this.fileBrowserAgentId || null
+        : null;
+    this.resetFileBrowserSessionContext(sessionId, { agentId: requestedAgentId });
 
     const repositoryOnly = options.repositoryOnly === true;
     const requestedScope = options.scopeId || this.fileBrowserScopeId || 'current';
+    const agentId = this.fileBrowserAgentId;
     const generation = ++this.fileBrowserLoadGeneration;
     this.fileBrowserAbortController?.abort();
     const controller = new AbortController();
@@ -3004,15 +3103,22 @@ Object.assign(CodemanApp.prototype, {
     }
 
     try {
-      const scopeQuery = encodeURIComponent(requestedScope);
       const repositoryRequest = fetch(
-        `/api/sessions/${sessionId}/repository?scope=${scopeQuery}`,
+        this.buildFileBrowserUrl(
+          `/api/sessions/${sessionId}/repository`,
+          { scope: requestedScope },
+          agentId
+        ),
         { signal: controller.signal }
       );
       const filesRequest = repositoryOnly
         ? null
         : fetch(
-            `/api/sessions/${sessionId}/files?depth=5&showHidden=false&scope=${scopeQuery}`,
+            this.buildFileBrowserUrl(
+              `/api/sessions/${sessionId}/files`,
+              { depth: 5, showHidden: false, scope: requestedScope },
+              agentId
+            ),
             { signal: controller.signal }
           );
       const [repositoryResponse, filesResponse] = await Promise.all([
@@ -3036,7 +3142,8 @@ Object.assign(CodemanApp.prototype, {
       if (
         generation !== this.fileBrowserLoadGeneration ||
         this.activeSessionId !== sessionId ||
-        this.fileBrowserSessionId !== sessionId
+        this.fileBrowserSessionId !== sessionId ||
+        this.fileBrowserAgentId !== agentId
       ) {
         return;
       }
@@ -3052,7 +3159,8 @@ Object.assign(CodemanApp.prototype, {
       console.error('Failed to load file browser:', err);
       if (
         generation === this.fileBrowserLoadGeneration &&
-        this.fileBrowserSessionId === sessionId
+        this.fileBrowserSessionId === sessionId &&
+        this.fileBrowserAgentId === agentId
       ) {
         treeEl.innerHTML = `<div class="file-browser-empty">Failed to load repository: ${escapeHtml(err.message)}</div>`;
       }
@@ -3074,10 +3182,14 @@ Object.assign(CodemanApp.prototype, {
     const changesCount = this.$('fileBrowserChangesCount');
     const available = repository?.available === true;
     const session = this.sessions.get(this.fileBrowserSessionId);
+    const agent = this.fileBrowserAgentId
+      ? this.subagents.get(this.fileBrowserAgentId)
+      : null;
 
     if (scopeRow) scopeRow.hidden = !available;
     if (workingDirectoryBtn) {
-      workingDirectoryBtn.hidden = !session || Boolean(session.remote || session.docker);
+      workingDirectoryBtn.hidden =
+        Boolean(this.fileBrowserAgentId) || !session || Boolean(session.remote || session.docker);
     }
     if (scopeSelect && available) {
       scopeSelect.replaceChildren();
@@ -3096,7 +3208,11 @@ Object.assign(CodemanApp.prototype, {
       const selected = repository?.worktrees?.find(
         worktree => worktree.id === this.fileBrowserScopeId
       );
-      rootEl.textContent = selected?.branch || '';
+      const branch = selected?.branch || '';
+      const agentLabel = agent?.description || agent?.agentId || this.fileBrowserAgentId;
+      rootEl.textContent = this.fileBrowserAgentId
+        ? [agentLabel, branch].filter(Boolean).join(' · ')
+        : branch;
       rootEl.title = selected?.path || repository?.repositoryRoot || '';
     }
 
@@ -3137,6 +3253,7 @@ Object.assign(CodemanApp.prototype, {
   },
 
   openFileBrowserWorkingDirectoryEditor() {
+    if (this.fileBrowserAgentId) return;
     const sessionId = this.fileBrowserSessionId || this.activeSessionId;
     const session = sessionId ? this.sessions.get(sessionId) : null;
     if (!session) {
@@ -3390,6 +3507,7 @@ Object.assign(CodemanApp.prototype, {
   },
 
   openFileBrowserDirectoryMenu(item, relativePath, clientX, clientY) {
+    if (this.fileBrowserAgentId) return;
     const sessionId = this.fileBrowserSessionId || this.activeSessionId;
     const session = sessionId ? this.sessions.get(sessionId) : null;
     const workingDir = this.getFileBrowserDirectoryPath(relativePath);
@@ -3479,6 +3597,7 @@ Object.assign(CodemanApp.prototype, {
   },
 
   bindFileBrowserDirectoryMenu(item, relativePath) {
+    if (this.fileBrowserAgentId) return;
     item.addEventListener('pointerdown', (event) => {
       if (event.pointerType === 'mouse' || event.button !== 0 || event.isPrimary === false) return;
       event.stopPropagation();
@@ -3565,9 +3684,7 @@ Object.assign(CodemanApp.prototype, {
     const html = [];
     const filter = this.fileBrowserFilter.toLowerCase();
     const sessionId = this.fileBrowserSessionId || this.activeSessionId;
-    const scopeSuffix = this.fileBrowserScopeId
-      ? `&scope=${encodeURIComponent(this.fileBrowserScopeId)}`
-      : '';
+    const agentId = this.fileBrowserAgentId;
 
     const renderNode = (node, depth) => {
       const isDir = node.type === 'directory';
@@ -3598,7 +3715,11 @@ Object.assign(CodemanApp.prototype, {
       const nameClass = isDir ? 'file-tree-name directory' : 'file-tree-name';
 
       const downloadBtn = !isDir
-        ? `<a class="file-tree-download" href="/api/sessions/${sessionId}/file-raw?path=${encodeURIComponent(node.path)}&download=true${scopeSuffix}" title="Download" onclick="event.stopPropagation()">&#x2B07;</a>`
+        ? `<a class="file-tree-download" href="${escapeHtml(this.buildFileBrowserUrl(
+            `/api/sessions/${sessionId}/file-raw`,
+            { path: node.path, download: true, scope: this.fileBrowserScopeId },
+            agentId
+          ))}" title="Download" onclick="event.stopPropagation()">&#x2B07;</a>`
         : '';
 
       html.push(`
@@ -3644,7 +3765,7 @@ Object.assign(CodemanApp.prototype, {
         if (type === 'directory') {
           this.toggleFileBrowserFolder(path);
         } else {
-          this.openFilePreview(path, sessionId, null, this.fileBrowserScopeId);
+          this.openFilePreview(path, sessionId, null, this.fileBrowserScopeId, agentId);
         }
       });
     });
@@ -3720,7 +3841,7 @@ Object.assign(CodemanApp.prototype, {
     treeEl.innerHTML = commits
       .map(commit => {
         const expanded = commit.hash === this.fileBrowserExpandedCommit;
-        const cacheKey = `${this.fileBrowserScopeId}:${commit.hash}`;
+        const cacheKey = this.getFileBrowserCommitCacheKey(commit.hash);
         const details = this.fileBrowserCommitCache.get(cacheKey);
         let files = '';
         if (expanded) {
@@ -3776,13 +3897,18 @@ Object.assign(CodemanApp.prototype, {
     this.fileBrowserExpandedCommit = commit;
     this.renderFileBrowserHistory();
 
-    const cacheKey = `${this.fileBrowserScopeId}:${commit}`;
+    const cacheKey = this.getFileBrowserCommitCacheKey(commit);
     if (this.fileBrowserCommitCache.has(cacheKey)) return;
     const sessionId = this.fileBrowserSessionId;
     const scopeId = this.fileBrowserScopeId;
+    const agentId = this.fileBrowserAgentId;
     try {
       const res = await fetch(
-        `/api/sessions/${sessionId}/repository/commit?scope=${encodeURIComponent(scopeId)}&commit=${encodeURIComponent(commit)}`
+        this.buildFileBrowserUrl(
+          `/api/sessions/${sessionId}/repository/commit`,
+          { scope: scopeId, commit },
+          agentId
+        )
       );
       const result = await res.json();
       if (!res.ok || !result.success) {
@@ -3790,7 +3916,8 @@ Object.assign(CodemanApp.prototype, {
       }
       if (
         this.fileBrowserSessionId !== sessionId ||
-        this.fileBrowserScopeId !== scopeId
+        this.fileBrowserScopeId !== scopeId ||
+        this.fileBrowserAgentId !== agentId
       ) {
         return;
       }
@@ -3863,7 +3990,7 @@ Object.assign(CodemanApp.prototype, {
   },
 
   refreshFileBrowser() {
-    const sessionId = this.activeSessionId || this.fileBrowserSessionId;
+    const sessionId = this.fileBrowserSessionId || this.activeSessionId;
     if (!sessionId) return;
     this.fileBrowserCommitCache.clear();
     this.loadFileBrowser(sessionId, { scopeId: this.fileBrowserScopeId });
@@ -3944,6 +4071,7 @@ Object.assign(CodemanApp.prototype, {
   async openRepositoryDiff(filePath, commit = null) {
     const sessionId = this.fileBrowserSessionId || this.activeSessionId;
     const scopeId = this.fileBrowserScopeId;
+    const agentId = this.fileBrowserAgentId;
     if (!sessionId || !scopeId || !filePath) return;
 
     const overlay = this.$('filePreviewOverlay');
@@ -3964,11 +4092,13 @@ Object.assign(CodemanApp.prototype, {
     if (modeEl) modeEl.hidden = false;
     this.setRepositoryDiffMode('compact');
 
-    const params = new URLSearchParams({ scope: scopeId, path: filePath });
-    if (commit) params.set('commit', commit);
     try {
       const res = await fetch(
-        `/api/sessions/${sessionId}/repository/diff?${params.toString()}`
+        this.buildFileBrowserUrl(
+          `/api/sessions/${sessionId}/repository/diff`,
+          { scope: scopeId, path: filePath, commit },
+          agentId
+        )
       );
       const result = await res.json();
       if (!res.ok || !result.success) {
@@ -3977,7 +4107,8 @@ Object.assign(CodemanApp.prototype, {
       if (
         generation !== this.fileDiffLoadGeneration ||
         this.fileBrowserSessionId !== sessionId ||
-        this.fileBrowserScopeId !== scopeId
+        this.fileBrowserScopeId !== scopeId ||
+        this.fileBrowserAgentId !== agentId
       ) {
         return;
       }
@@ -4148,7 +4279,8 @@ Object.assign(CodemanApp.prototype, {
     filePath,
     sessionId = this.activeSessionId,
     attachmentId = null,
-    scopeId = null
+    scopeId = null,
+    agentId = null
   ) {
     if (!sessionId || !filePath) return;
 
@@ -4160,7 +4292,8 @@ Object.assign(CodemanApp.prototype, {
     if (!overlay || !bodyEl) return;
 
     // Show overlay with loading state
-    this.fileDiffLoadGeneration = (this.fileDiffLoadGeneration || 0) + 1;
+    const generation = (this.fileDiffLoadGeneration || 0) + 1;
+    this.fileDiffLoadGeneration = generation;
     this.fileDiffData = null;
     const modeEl = this.$('filePreviewMode');
     if (modeEl) modeEl.hidden = true;
@@ -4168,7 +4301,6 @@ Object.assign(CodemanApp.prototype, {
     titleEl.textContent = filePath;
     bodyEl.innerHTML = '<div class="binary-message">Loading...</div>';
     footerEl.textContent = '';
-    const scopeSuffix = scopeId ? `&scope=${encodeURIComponent(scopeId)}` : '';
 
     const ext = (filePath.split('.').pop() || '').toLowerCase();
 
@@ -4190,8 +4322,10 @@ Object.assign(CodemanApp.prototype, {
           const res = await fetch(`${base}/raw`);
           if (!res.ok) throw new Error('Failed to load attachment');
           const text = await res.text();
+          if (generation !== this.fileDiffLoadGeneration) return;
           bodyEl.innerHTML = `<pre><code>${escapeHtml(text)}</code></pre>`;
         } catch (err) {
+          if (generation !== this.fileDiffLoadGeneration) return;
           bodyEl.innerHTML = `<div class="binary-message">Error: ${escapeHtml(err.message)}</div>`;
         }
       }
@@ -4204,13 +4338,21 @@ Object.assign(CodemanApp.prototype, {
     // to file-content below, which would dump the binary bytes as mojibake.
     if (ext === 'docx' || ext === 'pptx') {
       footerEl.textContent = ext.toUpperCase();
-      const previewSrc = `/api/sessions/${sessionId}/file-preview?path=${encodeURIComponent(filePath)}${scopeSuffix}`;
+      const previewSrc = this.buildFileBrowserUrl(
+        `/api/sessions/${sessionId}/file-preview`,
+        { path: filePath, scope: scopeId },
+        agentId
+      );
       bodyEl.innerHTML = `<iframe src="${escapeHtml(previewSrc)}" title="${escapeHtml(filePath)}"></iframe>`;
       return;
     }
     if (ext === 'pdf') {
       footerEl.textContent = 'PDF';
-      const rawSrc = `/api/sessions/${sessionId}/file-raw?path=${encodeURIComponent(filePath)}${scopeSuffix}`;
+      const rawSrc = this.buildFileBrowserUrl(
+        `/api/sessions/${sessionId}/file-raw`,
+        { path: filePath, scope: scopeId },
+        agentId
+      );
       bodyEl.innerHTML = `<iframe src="${escapeHtml(rawSrc)}" title="${escapeHtml(filePath)}"></iframe>`;
       return;
     }
@@ -4223,14 +4365,21 @@ Object.assign(CodemanApp.prototype, {
       footerEl.textContent = 'SVG';
       try {
         const res = await fetch(
-          `/api/sessions/${sessionId}/file-raw?path=${encodeURIComponent(filePath)}${scopeSuffix}`
+          this.buildFileBrowserUrl(
+            `/api/sessions/${sessionId}/file-raw`,
+            { path: filePath, scope: scopeId },
+            agentId
+          )
         );
         if (!res.ok) throw new Error('Failed to load image');
-        const blobUrl = URL.createObjectURL(new Blob([await res.text()], { type: 'image/svg+xml' }));
+        const content = await res.text();
+        if (generation !== this.fileDiffLoadGeneration) return;
+        const blobUrl = URL.createObjectURL(new Blob([content], { type: 'image/svg+xml' }));
         bodyEl.innerHTML = `<img src="${blobUrl}" alt="${escapeHtml(filePath)}">`;
         const img = bodyEl.querySelector('img');
         if (img) img.onload = () => URL.revokeObjectURL(blobUrl);
       } catch (err) {
+        if (generation !== this.fileDiffLoadGeneration) return;
         bodyEl.innerHTML = `<div class="binary-message">Error: ${escapeHtml(err.message)}</div>`;
       }
       return;
@@ -4238,12 +4387,17 @@ Object.assign(CodemanApp.prototype, {
 
     try {
       const res = await fetch(
-        `/api/sessions/${sessionId}/file-content?path=${encodeURIComponent(filePath)}&lines=500${scopeSuffix}`
+        this.buildFileBrowserUrl(
+          `/api/sessions/${sessionId}/file-content`,
+          { path: filePath, lines: 500, scope: scopeId },
+          agentId
+        )
       );
       if (!res.ok) throw new Error('Failed to load file');
 
       const result = await res.json();
       if (!result.success) throw new Error(result.error || 'Failed to load file');
+      if (generation !== this.fileDiffLoadGeneration) return;
 
       const data = result.data;
 
@@ -4257,7 +4411,11 @@ Object.assign(CodemanApp.prototype, {
         bodyEl.innerHTML = `<audio src="${data.url}" controls autoplay></audio>`;
         footerEl.textContent = `${this.formatFileSize(data.size)} \u2022 ${data.extension}`;
       } else if (data.type === 'binary') {
-        const downloadHref = `/api/sessions/${sessionId}/file-raw?path=${encodeURIComponent(filePath)}&download=true`;
+        const downloadHref = this.buildFileBrowserUrl(
+          `/api/sessions/${sessionId}/file-raw`,
+          { path: filePath, download: true, scope: scopeId },
+          agentId
+        );
         bodyEl.innerHTML = `<div class="binary-message">Binary file (${this.formatFileSize(data.size)})<br>Cannot preview<br><a href="${escapeHtml(downloadHref)}" download>Download</a></div>`;
         footerEl.textContent = data.extension || 'binary';
       } else {
@@ -4268,6 +4426,7 @@ Object.assign(CodemanApp.prototype, {
         footerEl.textContent = `${data.totalLines} lines \u2022 ${this.formatFileSize(data.size)}${truncNote}`;
       }
     } catch (err) {
+      if (generation !== this.fileDiffLoadGeneration) return;
       console.error('Failed to preview file:', err);
       bodyEl.innerHTML = `<div class="binary-message">Error: ${escapeHtml(err.message)}</div>`;
     }

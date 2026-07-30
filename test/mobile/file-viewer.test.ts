@@ -254,6 +254,121 @@ describe('Mobile File Viewer', () => {
     });
   });
 
+  it('follows a selected subagent workspace and restores the parent session context', async () => {
+    const state = await page.evaluate(async () => {
+      const originalFetch = window.fetch;
+      const requests: string[] = [];
+      window.fetch = async (input) => {
+        const url = String(input);
+        requests.push(url);
+        const viewingAgent = url.includes('agentId=agent-feature');
+        const root = viewingAgent ? '/worktrees/agent-feature' : '/repos/parent';
+        const scopeId = viewingAgent ? 'agent-current' : 'parent-current';
+        const payload = url.includes('/repository?')
+          ? {
+              success: true,
+              data: {
+                available: true,
+                repositoryRoot: root,
+                selectedScopeId: scopeId,
+                worktrees: [
+                  {
+                    id: scopeId,
+                    path: root,
+                    name: viewingAgent ? 'agent-feature' : 'parent',
+                    branch: viewingAgent ? 'feature/agent' : 'main',
+                    head: 'a'.repeat(40),
+                    current: true,
+                    main: true,
+                    locked: false,
+                  },
+                ],
+                changes: [],
+                commits: [],
+              },
+            }
+          : {
+              success: true,
+              data: {
+                root,
+                tree: [],
+                totalFiles: 0,
+                totalDirectories: 0,
+                truncated: false,
+              },
+            };
+        return new Response(JSON.stringify(payload), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      };
+
+      app.sessions.set('parent-session', {
+        id: 'parent-session',
+        claudeSessionId: 'claude-parent',
+        name: 'Parent',
+        mode: 'claude',
+        status: 'idle',
+        pid: 1,
+        workingDir: '/repos/parent',
+      });
+      app.subagents.set('agent-feature', {
+        agentId: 'agent-feature',
+        sessionId: 'claude-parent',
+        parentSessionId: 'parent-session',
+        description: 'Feature worker',
+        workingDir: '/worktrees/agent-feature',
+        status: 'active',
+        toolCallCount: 0,
+        entryCount: 1,
+        fileSize: 1,
+      });
+      app.subagentParentMap.set('agent-feature', 'parent-session');
+      app.activeSessionId = 'parent-session';
+      app.fileBrowserSessionId = 'parent-session';
+      app.fileBrowserAgentId = null;
+      document.getElementById('fileBrowserPanel')?.classList.add('visible');
+
+      await app.selectSubagent('agent-feature');
+      const agentState = {
+        agentId: app.fileBrowserAgentId,
+        root: app.fileBrowserData?.root,
+        rootLabel: document.getElementById('fileBrowserRoot')?.textContent,
+        editHidden: (document.getElementById('fileBrowserWorkingDirectoryBtn') as HTMLElement)?.hidden,
+        requests: [...requests],
+      };
+
+      requests.length = 0;
+      await app.focusFileBrowserSession('parent-session');
+      const parentState = {
+        agentId: app.fileBrowserAgentId,
+        root: app.fileBrowserData?.root,
+        workingDir: app.sessions.get('parent-session')?.workingDir,
+        requests: [...requests],
+      };
+
+      window.fetch = originalFetch;
+      return { agentState, parentState };
+    });
+
+    expect(state.agentState).toMatchObject({
+      agentId: 'agent-feature',
+      root: '/worktrees/agent-feature',
+      editHidden: true,
+    });
+    expect(state.agentState.rootLabel).toContain('Feature worker');
+    expect(state.agentState.requests).toHaveLength(2);
+    expect(state.agentState.requests.every((url) => url.includes('agentId=agent-feature'))).toBe(true);
+
+    expect(state.parentState).toMatchObject({
+      agentId: null,
+      root: '/repos/parent',
+      workingDir: '/repos/parent',
+    });
+    expect(state.parentState.requests).toHaveLength(2);
+    expect(state.parentState.requests.every((url) => !url.includes('agentId='))).toBe(true);
+  });
+
   it('reassigns the active session work path and reloads the repository at current scope', async () => {
     const state = await page.evaluate(async () => {
       const originalFetch = window.fetch;
