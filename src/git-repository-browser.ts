@@ -417,8 +417,9 @@ async function getRecentCommits(cwd: string): Promise<GitCommitSummary[]> {
   const result = await runGit(cwd, [
     'log',
     `-${COMMIT_LIMIT}`,
+    '-z',
     '--date=iso-strict',
-    '--pretty=format:%H%x1f%h%x1f%an%x1f%aI%x1f%s%x00',
+    '--pretty=format:%H%x1f%h%x1f%an%x1f%aI%x1f%s',
   ]);
   return result.stdout
     .toString('utf8')

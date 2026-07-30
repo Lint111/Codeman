@@ -137,6 +137,22 @@ describe('git-repository-browser', () => {
     );
   });
 
+  it('returns reusable full hashes for every commit history record', async () => {
+    writeFileSync(join(featureWorktree, 'README.md'), 'initial\nsecond commit\n');
+    git(featureWorktree, 'add', 'README.md');
+    git(featureWorktree, 'commit', '-m', 'second commit');
+
+    const overview = await getGitRepositoryOverview(nestedWorkingDir, 'current');
+
+    expect(overview.commits).toHaveLength(2);
+    for (const commit of overview.commits) {
+      expect(commit.hash).toMatch(/^[a-f0-9]{40,64}$/);
+      await expect(getGitCommitDetails(nestedWorkingDir, 'current', commit.hash)).resolves.toMatchObject({
+        hash: commit.hash,
+      });
+    }
+  });
+
   it('rejects symlink escapes and bounds binary or oversized previews', async () => {
     const outsideSecret = join(fixtureRoot, 'outside-secret.txt');
     writeFileSync(outsideSecret, 'do not expose\n');
