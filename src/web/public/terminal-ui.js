@@ -994,7 +994,7 @@ Object.assign(CodemanApp.prototype, {
       items.push(...group.slice(0, 3));
     }
     items.sort((a, b) => new Date(b.lastModified) - new Date(a.lastModified));
-    return items;
+    return items.map((session) => this.applySessionWorkspaceAssignment?.(session) || session);
   },
 
   /**
@@ -1013,7 +1013,9 @@ Object.assign(CodemanApp.prototype, {
     if (!res.ok || !data || data.success === false || !data.data) {
       throw new Error(data?.error || `unified sessions request failed (HTTP ${res.status})`);
     }
-    return data.data.sessions || [];
+    return (data.data.sessions || []).map(
+      (session) => this.applySessionWorkspaceAssignment?.(session) || session
+    );
   },
 
   /**
@@ -1666,18 +1668,20 @@ Object.assign(CodemanApp.prototype, {
     // Close folder history modal if open
     this._closeFolderHistoryModal();
     try {
+      const resumeWorkingDir =
+        this.getSessionWorkspaceAssignment?.(sessionId, workingDir) || workingDir;
       this.terminal.clear();
       this.terminal.writeln(`\x1b[1;32m Resuming conversation ${sessionId.slice(0, 8)}...\x1b[0m`);
 
       // Keep the session's own name when resuming; only synthesize a w<N>-<dir>
       // name when the source row had none (COD-143).
-      const name = this._resolveResumeName(existingName, workingDir);
+      const name = this._resolveResumeName(existingName, resumeWorkingDir);
 
       // Create session with resumeSessionId — include envOverrides so resumed
       // conversations inherit current UI settings (effort, agent teams, etc.).
       // Match by path (not basename) so linked/renamed cases still resolve correctly.
-      const matchingCase = (this.cases || []).find((c) => c.path === workingDir);
-      const caseName = matchingCase?.name || workingDir.split('/').pop() || '';
+      const matchingCase = (this.cases || []).find((c) => c.path === resumeWorkingDir);
+      const caseName = matchingCase?.name || resumeWorkingDir.split('/').pop() || '';
       const globalSettings = this.loadAppSettingsFromStorage();
       const envOverrides = this.buildEnvOverrides(this.getCaseSettings(caseName), globalSettings);
       const effort = this.getEffortSetting(globalSettings);
@@ -1685,7 +1689,7 @@ Object.assign(CodemanApp.prototype, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          workingDir,
+          workingDir: resumeWorkingDir,
           name,
           resumeSessionId: sessionId,
           ...(Object.keys(envOverrides).length > 0 ? { envOverrides } : {}),

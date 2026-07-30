@@ -14,6 +14,9 @@
  */
 
 const AWAY_DIGEST_LAST_VIEWED_KEY = 'codeman-away-digest-last-viewed';
+const SESSION_WORKSPACE_CACHE_PREFIX = 'codeman:session-workspace:';
+const FILE_BROWSER_DIRECTORY_HOLD_MS = 500;
+const FILE_BROWSER_DIRECTORY_HOLD_TOLERANCE = 10;
 const AWAY_DIGEST_SECTIONS = [
   ['needsAttention', 'Needs Attention'],
   ['completed', 'Completed'],
@@ -2947,6 +2950,8 @@ Object.assign(CodemanApp.prototype, {
   resetFileBrowserSessionContext(sessionId, options = {}) {
     if (!sessionId || (!options.force && this.fileBrowserSessionId === sessionId)) return false;
 
+    this.cancelFileBrowserDirectoryHold();
+    this.closeFileBrowserDirectoryMenu();
     this.fileBrowserAbortController?.abort();
     this.fileBrowserAbortController = null;
     this.fileBrowserLoadGeneration += 1;
@@ -3112,6 +3117,8 @@ Object.assign(CodemanApp.prototype, {
 
   switchFileBrowserView(view) {
     if (!['files', 'changes', 'history'].includes(view)) return;
+    this.cancelFileBrowserDirectoryHold();
+    this.closeFileBrowserDirectoryMenu();
     this.fileBrowserView = view;
     this.renderFileBrowserControls();
     this.renderFileBrowserCurrentView();
@@ -3120,6 +3127,8 @@ Object.assign(CodemanApp.prototype, {
 
   changeFileBrowserScope(scopeId) {
     if (!scopeId || scopeId === this.fileBrowserScopeId || !this.fileBrowserSessionId) return;
+    this.cancelFileBrowserDirectoryHold();
+    this.closeFileBrowserDirectoryMenu();
     this.fileBrowserScopeId = scopeId;
     this.fileBrowserExpandedDirs.clear();
     this.fileBrowserCommitCache.clear();
@@ -3172,24 +3181,80 @@ Object.assign(CodemanApp.prototype, {
     this._workingDirectoryFocusTrap = null;
   },
 
-  async saveFileBrowserWorkingDirectory(event) {
-    event?.preventDefault?.();
-    const modal = this.$('workingDirectoryModal');
-    const input = this.$('workingDirectoryInput');
-    const status = this.$('workingDirectoryStatus');
-    const saveBtn = this.$('workingDirectorySaveBtn');
-    const sessionId = modal?.dataset.sessionId;
-    const workingDir = input?.value.trim();
-    if (!modal || !sessionId || !workingDir) return;
-
-    if (saveBtn) saveBtn.disabled = true;
-    if (status) {
-      status.hidden = true;
-      status.textContent = '';
-    }
-
+  _readSessionWorkspaceAssignment(key) {
     try {
-      this._pendingWorkingDirectoryChange = { sessionId, workingDir };
+      const parsed = JSON.parse(
+        localStorage.getItem(`${SESSION_WORKSPACE_CACHE_PREFIX}${encodeURIComponent(key)}`) || 'null'
+      );
+      return parsed?.version === 1 && typeof parsed.workingDir === 'string' ? parsed : null;
+    } catch {
+      return null;
+    }
+  },
+
+  _sessionWorkspaceAssignmentKeys(sessionOrId) {
+    const candidates =
+      typeof sessionOrId === 'string'
+        ? [sessionOrId]
+        : [
+            sessionOrId?.id,
+            sessionOrId?.sessionId,
+            sessionOrId?.claudeSessionId,
+            sessionOrId?.resumeSessionId,
+            sessionOrId?.codexConfig?.resumeSessionId,
+            sessionOrId?.openCodeConfig?.continueSession,
+            sessionOrId?.openCodeConfig?.forkSession,
+            sessionOrId?.geminiConfig?.resumeSession,
+          ];
+    return [...new Set(candidates.filter((value) => typeof value === 'string' && value.trim()))];
+  },
+
+  getSessionWorkspaceAssignment(sessionOrId, fallback = '') {
+    let selected = null;
+    for (const key of this._sessionWorkspaceAssignmentKeys(sessionOrId)) {
+      const record = this._readSessionWorkspaceAssignment(key);
+      if (!record?.workingDir) continue;
+      if (!selected || Number(record.updatedAt || 0) > Number(selected.updatedAt || 0)) {
+        selected = record;
+      }
+    }
+    return selected?.workingDir || fallback;
+  },
+
+  rememberSessionWorkspaceAssignment(sessionOrId, workingDir) {
+    if (typeof workingDir !== 'string' || !workingDir) return;
+    const keys = this._sessionWorkspaceAssignmentKeys(sessionOrId);
+    if (keys.length === 0) return;
+
+    const record = JSON.stringify({ version: 1, workingDir, updatedAt: Date.now() });
+    for (const key of keys) {
+      try {
+        localStorage.setItem(
+          `${SESSION_WORKSPACE_CACHE_PREFIX}${encodeURIComponent(key)}`,
+          record
+        );
+      } catch {
+        // The server remains authoritative for live sessions when storage is unavailable.
+      }
+    }
+  },
+
+  mirrorSessionWorkspaceAssignment(previousSession, nextSession) {
+    const workingDir = this.getSessionWorkspaceAssignment(previousSession);
+    if (workingDir) this.rememberSessionWorkspaceAssignment(nextSession, workingDir);
+  },
+
+  applySessionWorkspaceAssignment(record) {
+    if (!record || typeof record !== 'object') return record;
+    const sources = Array.isArray(record.sources) ? record.sources : [];
+    if (sources.includes('live') || sources.includes('persisted')) return record;
+    const workingDir = this.getSessionWorkspaceAssignment(record, record.workingDir || '');
+    return workingDir && workingDir !== record.workingDir ? { ...record, workingDir } : record;
+  },
+
+  async updateFileBrowserWorkingDirectory(sessionId, workingDir) {
+    this._pendingWorkingDirectoryChange = { sessionId, workingDir };
+    try {
       const response = await this._apiPut(
         `/api/sessions/${encodeURIComponent(sessionId)}/working-directory`,
         { workingDir }
@@ -3207,8 +3272,33 @@ Object.assign(CodemanApp.prototype, {
       const updatedWorkingDir = result?.data?.workingDir || result?.workingDir || workingDir;
       const session = this.sessions.get(sessionId);
       if (session) session.workingDir = updatedWorkingDir;
-      this.closeFileBrowserWorkingDirectoryEditor();
+      this.rememberSessionWorkspaceAssignment(session || sessionId, updatedWorkingDir);
       await this.syncFileBrowserSession(sessionId, { force: true });
+      return updatedWorkingDir;
+    } finally {
+      this._pendingWorkingDirectoryChange = null;
+    }
+  },
+
+  async saveFileBrowserWorkingDirectory(event) {
+    event?.preventDefault?.();
+    const modal = this.$('workingDirectoryModal');
+    const input = this.$('workingDirectoryInput');
+    const status = this.$('workingDirectoryStatus');
+    const saveBtn = this.$('workingDirectorySaveBtn');
+    const sessionId = modal?.dataset.sessionId;
+    const workingDir = input?.value.trim();
+    if (!modal || !sessionId || !workingDir) return;
+
+    if (saveBtn) saveBtn.disabled = true;
+    if (status) {
+      status.hidden = true;
+      status.textContent = '';
+    }
+
+    try {
+      await this.updateFileBrowserWorkingDirectory(sessionId, workingDir);
+      this.closeFileBrowserWorkingDirectoryEditor();
       this.showToast('Session work path updated', 'success');
     } catch (err) {
       if (status) {
@@ -3216,7 +3306,6 @@ Object.assign(CodemanApp.prototype, {
         status.hidden = false;
       }
     } finally {
-      this._pendingWorkingDirectoryChange = null;
       if (saveBtn) saveBtn.disabled = false;
     }
   },
@@ -3276,10 +3365,197 @@ Object.assign(CodemanApp.prototype, {
     }, 5000);
   },
 
+  getFileBrowserDirectoryPath(relativePath) {
+    const root = this.fileBrowserData?.root;
+    if (!root || typeof relativePath !== 'string') return '';
+    if (!relativePath) return root;
+
+    const separator = root.includes('\\') && !root.includes('/') ? '\\' : '/';
+    const base = root.replace(/[\\/]+$/, '') || separator;
+    const child = relativePath.replace(/^[\\/]+/, '').replace(/[\\/]+/g, separator);
+    return base === separator ? `${base}${child}` : `${base}${separator}${child}`;
+  },
+
+  closeFileBrowserDirectoryMenu() {
+    const state = this.fileBrowserDirectoryMenu;
+    if (!state) return;
+    this.fileBrowserDirectoryMenu = null;
+    state.cleanup?.();
+    state.item?.classList.remove('workspace-menu-open');
+    state.element?.remove();
+  },
+
+  cancelFileBrowserDirectoryHold() {
+    this.fileBrowserDirectoryHoldCleanup?.();
+  },
+
+  openFileBrowserDirectoryMenu(item, relativePath, clientX, clientY) {
+    const sessionId = this.fileBrowserSessionId || this.activeSessionId;
+    const session = sessionId ? this.sessions.get(sessionId) : null;
+    const workingDir = this.getFileBrowserDirectoryPath(relativePath);
+    if (!session || session.remote || session.docker || !workingDir) return;
+
+    this.closeFileBrowserDirectoryMenu();
+
+    const menu = document.createElement('div');
+    menu.className = 'file-browser-directory-menu';
+    menu.setAttribute('role', 'menu');
+    menu.setAttribute('aria-label', `Directory actions for ${relativePath}`);
+    menu.style.visibility = 'hidden';
+
+    const pathLabel = document.createElement('div');
+    pathLabel.className = 'file-browser-directory-menu-path';
+    pathLabel.textContent = workingDir;
+    pathLabel.title = workingDir;
+
+    const setWorkspaceButton = document.createElement('button');
+    setWorkspaceButton.type = 'button';
+    setWorkspaceButton.setAttribute('role', 'menuitem');
+    const isCurrent = workingDir === session.workingDir;
+    setWorkspaceButton.textContent = isCurrent ? 'Current workspace' : 'Set as current workspace';
+    setWorkspaceButton.disabled = isCurrent;
+    setWorkspaceButton.addEventListener('click', async (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      this.closeFileBrowserDirectoryMenu();
+      try {
+        await this.updateFileBrowserWorkingDirectory(sessionId, workingDir);
+        this.showToast('Session workspace updated', 'success');
+      } catch (err) {
+        this.showToast(err?.message || 'Failed to update workspace', 'error');
+      }
+    });
+
+    menu.append(pathLabel, setWorkspaceButton);
+    menu.addEventListener('pointerdown', (event) => event.stopPropagation());
+    menu.addEventListener('click', (event) => event.stopPropagation());
+    document.body.appendChild(menu);
+    item.classList.add('workspace-menu-open');
+
+    const itemRect = item.getBoundingClientRect();
+    const menuRect = menu.getBoundingClientRect();
+    const viewport = window.visualViewport;
+    const viewportLeft = viewport?.offsetLeft || 0;
+    const viewportTop = viewport?.offsetTop || 0;
+    const viewportWidth = viewport?.width || document.documentElement.clientWidth;
+    const viewportHeight = viewport?.height || document.documentElement.clientHeight;
+    const margin = 8;
+    const anchorX = Number.isFinite(clientX) ? clientX : itemRect.left;
+    const anchorY = Number.isFinite(clientY) ? clientY : itemRect.bottom;
+    const maxLeft = viewportLeft + viewportWidth - menuRect.width - margin;
+    const maxTop = viewportTop + viewportHeight - menuRect.height - margin;
+    const belowTop = anchorY + margin;
+    const preferredTop =
+      belowTop <= maxTop ? belowTop : Math.max(viewportTop + margin, anchorY - menuRect.height - margin);
+    menu.style.left = `${Math.max(viewportLeft + margin, Math.min(anchorX, maxLeft))}px`;
+    menu.style.top = `${Math.max(viewportTop + margin, Math.min(preferredTop, maxTop))}px`;
+    menu.style.visibility = 'visible';
+
+    const close = () => this.closeFileBrowserDirectoryMenu();
+    const onOutsidePointer = (event) => {
+      if (!menu.contains(event.target)) close();
+    };
+    const onKeyDown = (event) => {
+      if (event.key === 'Escape') close();
+    };
+    document.addEventListener('pointerdown', onOutsidePointer, true);
+    document.addEventListener('keydown', onKeyDown);
+    document.addEventListener('scroll', close, true);
+    window.addEventListener('resize', close);
+    viewport?.addEventListener('resize', close);
+
+    this.fileBrowserDirectoryMenu = {
+      element: menu,
+      item,
+      workingDir,
+      cleanup: () => {
+        document.removeEventListener('pointerdown', onOutsidePointer, true);
+        document.removeEventListener('keydown', onKeyDown);
+        document.removeEventListener('scroll', close, true);
+        window.removeEventListener('resize', close);
+        viewport?.removeEventListener('resize', close);
+      },
+    };
+  },
+
+  bindFileBrowserDirectoryMenu(item, relativePath) {
+    item.addEventListener('pointerdown', (event) => {
+      if (event.pointerType === 'mouse' || event.button !== 0 || event.isPrimary === false) return;
+      event.stopPropagation();
+      this.fileBrowserDirectoryHoldCleanup?.();
+
+      const pointerId = event.pointerId;
+      const startX = event.clientX;
+      const startY = event.clientY;
+      let timer = null;
+      let activated = false;
+      const cleanup = () => {
+        if (timer !== null) clearTimeout(timer);
+        timer = null;
+        document.removeEventListener('pointermove', onMove, true);
+        document.removeEventListener('pointerup', onEnd, true);
+        document.removeEventListener('pointercancel', onEnd, true);
+        if (this.fileBrowserDirectoryHoldCleanup === cleanup) {
+          this.fileBrowserDirectoryHoldCleanup = null;
+        }
+      };
+      const suppressNextClick = () => {
+        item.dataset.suppressNextClick = 'true';
+        setTimeout(() => {
+          if (item.dataset.suppressNextClick === 'true') {
+            delete item.dataset.suppressNextClick;
+          }
+        }, 500);
+      };
+      const onMove = (moveEvent) => {
+        if (moveEvent.pointerId !== pointerId) return;
+        if (
+          Math.hypot(moveEvent.clientX - startX, moveEvent.clientY - startY) >
+          FILE_BROWSER_DIRECTORY_HOLD_TOLERANCE
+        ) {
+          if (activated) {
+            this.closeFileBrowserDirectoryMenu();
+            suppressNextClick();
+          }
+          cleanup();
+        }
+      };
+      const onEnd = (endEvent) => {
+        if (endEvent.pointerId !== pointerId) return;
+        if (activated && endEvent.type === 'pointercancel') {
+          this.closeFileBrowserDirectoryMenu();
+        } else if (activated) {
+          if (endEvent.cancelable) endEvent.preventDefault();
+          suppressNextClick();
+        }
+        cleanup();
+      };
+
+      document.addEventListener('pointermove', onMove, true);
+      document.addEventListener('pointerup', onEnd, true);
+      document.addEventListener('pointercancel', onEnd, true);
+      this.fileBrowserDirectoryHoldCleanup = cleanup;
+      timer = setTimeout(() => {
+        timer = null;
+        activated = true;
+        this.openFileBrowserDirectoryMenu(item, relativePath, startX, startY);
+      }, FILE_BROWSER_DIRECTORY_HOLD_MS);
+    });
+
+    item.addEventListener('contextmenu', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      this.cancelFileBrowserDirectoryHold();
+      this.openFileBrowserDirectoryMenu(item, relativePath, event.clientX, event.clientY);
+    });
+  },
+
   renderFileBrowserTree() {
     const treeEl = this.$('fileBrowserTree');
     if (!treeEl || !this.fileBrowserData) return;
 
+    this.cancelFileBrowserDirectoryHold();
+    this.closeFileBrowserDirectoryMenu();
     const { tree } = this.fileBrowserData;
     if (!tree || tree.length === 0) {
       treeEl.innerHTML = '<div class="file-browser-empty">No files found</div>';
@@ -3351,7 +3627,17 @@ Object.assign(CodemanApp.prototype, {
 
     // Add click handlers
     treeEl.querySelectorAll('.file-tree-item').forEach(item => {
-      item.addEventListener('click', () => {
+      if (item.dataset.type === 'directory') {
+        this.bindFileBrowserDirectoryMenu(item, item.dataset.path);
+      }
+      item.addEventListener('click', (event) => {
+        if (item.dataset.suppressNextClick === 'true') {
+          delete item.dataset.suppressNextClick;
+          event.preventDefault();
+          event.stopPropagation();
+          return;
+        }
+
         const path = item.dataset.path;
         const type = item.dataset.type;
 
@@ -3610,6 +3896,8 @@ Object.assign(CodemanApp.prototype, {
   },
 
   closeFileBrowserPanel() {
+    this.cancelFileBrowserDirectoryHold();
+    this.closeFileBrowserDirectoryMenu();
     const panel = this.$('fileBrowserPanel');
     if (panel) {
       panel.classList.remove('visible');

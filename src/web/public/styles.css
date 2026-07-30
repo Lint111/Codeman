@@ -9028,8 +9028,60 @@ kbd {
   background: rgba(59, 130, 246, 0.15);
 }
 
+.file-tree-item.workspace-menu-open {
+  background: var(--bg-hover);
+}
+
+.file-tree-item[data-type="directory"] {
+  touch-action: pan-y;
+  -webkit-touch-callout: none;
+}
+
 .file-tree-item.hidden-by-filter {
   display: none;
+}
+
+.file-browser-directory-menu {
+  position: fixed;
+  z-index: 900;
+  display: grid;
+  width: 220px;
+  max-width: calc(100vw - 16px);
+  padding: 0.3rem;
+  border: 1px solid var(--control-border);
+  border-radius: 6px;
+  background: var(--floating-bg);
+  box-shadow: var(--elevated-shadow);
+  color: var(--text);
+}
+
+.file-browser-directory-menu-path {
+  overflow: hidden;
+  padding: 0.3rem 0.45rem 0.4rem;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 0.64rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-browser-directory-menu button {
+  min-height: 44px;
+  padding: 0.5rem;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 0.75rem;
+  text-align: left;
+  cursor: pointer;
+}
+
+.file-browser-directory-menu button:hover,
+.file-browser-directory-menu button:focus-visible {
+  background: var(--bg-hover);
+  outline: none;
 }
 
 .file-tree-icon {

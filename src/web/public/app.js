@@ -613,6 +613,8 @@ class CodemanApp {
     this.fileBrowserCommitCache = new Map();
     this.fileBrowserExpandedCommit = null;
     this.fileBrowserAutoRefreshTimer = null;
+    this.fileBrowserDirectoryMenu = null;
+    this.fileBrowserDirectoryHoldCleanup = null;
     this.filePreviewContent = '';
     this.fileDiffData = null;
     this.fileDiffMode = 'compact';
@@ -1678,10 +1680,17 @@ class CodemanApp {
     const session = data.session || data;
     const oldSession = this.sessions.get(session.id);
     const claudeSessionIdJustSet = session.claudeSessionId && (!oldSession || !oldSession.claudeSessionId);
+    const conversationIdentityChanged =
+      session.claudeSessionId && session.claudeSessionId !== oldSession?.claudeSessionId;
     const workingDirectoryChanged = Boolean(
       oldSession && session.workingDir && oldSession.workingDir !== session.workingDir
     );
     this.sessions.set(session.id, session);
+    if (workingDirectoryChanged) {
+      this.rememberSessionWorkspaceAssignment?.(session, session.workingDir);
+    } else if (conversationIdentityChanged) {
+      this.mirrorSessionWorkspaceAssignment?.(oldSession, session);
+    }
     this.renderSessionTabs();
     this.updateCost();
     // Update tokens display if this is the active session

@@ -348,6 +348,277 @@ describe('Mobile File Viewer', () => {
     expect(state.requests.some((request) => request.url.includes('/repository?scope=current'))).toBe(true);
   });
 
+  it('opens a directory workspace menu on hold while preserving scroll gestures', async () => {
+    await page.evaluate(() => {
+      const testWindow = window as typeof window & {
+        __fileViewerOriginalFetch?: typeof window.fetch;
+        __workspaceRequests?: Array<{ url: string; method: string; body?: string }>;
+      };
+      testWindow.__fileViewerOriginalFetch = window.fetch;
+      testWindow.__workspaceRequests = [];
+      window.fetch = async (input, init) => {
+        const url = String(input);
+        const method = init?.method || 'GET';
+        testWindow.__workspaceRequests?.push({
+          url,
+          method,
+          body: typeof init?.body === 'string' ? init.body : undefined,
+        });
+        if (url.endsWith('/working-directory')) {
+          return new Response(JSON.stringify({ success: true, data: { workingDir: '/repos/project/src' } }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
+        const repository = {
+          success: true,
+          data: {
+            available: true,
+            repositoryRoot: '/repos/project',
+            selectedScopeId: 'project-current',
+            worktrees: [
+              {
+                id: 'project-current',
+                path: '/repos/project',
+                name: 'project',
+                branch: 'main',
+                head: 'a'.repeat(40),
+                current: true,
+                main: true,
+                locked: false,
+              },
+            ],
+            changes: [],
+            commits: [],
+          },
+        };
+        const files = {
+          success: true,
+          data: {
+            root: '/repos/project/src',
+            tree: [],
+            totalFiles: 0,
+            totalDirectories: 0,
+            truncated: false,
+          },
+        };
+        return new Response(JSON.stringify(url.includes('/repository?') ? repository : files), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      };
+
+      app.sessions.set('workspace-session', {
+        id: 'workspace-session',
+        claudeSessionId: '6eeaf98a-082f-4d8a-9073-87808600c924',
+        name: 'Workspace',
+        mode: 'claude',
+        status: 'idle',
+        pid: 1,
+        workingDir: '/repos/project',
+      });
+      app.activeSessionId = 'workspace-session';
+      app.fileBrowserSessionId = 'workspace-session';
+      app.fileBrowserScopeId = 'project-current';
+      app.fileBrowserData = {
+        root: '/repos/project',
+        tree: [
+          {
+            name: 'src',
+            path: 'src',
+            type: 'directory',
+            children: [],
+          },
+        ],
+        totalFiles: 0,
+        totalDirectories: 1,
+        truncated: false,
+      };
+      document.getElementById('fileBrowserPanel')?.classList.add('visible');
+      (document.activeElement as HTMLElement | null)?.blur?.();
+      app.renderFileBrowserTree();
+    });
+
+    const directory = page.locator('.file-tree-item[data-path="src"]');
+    const box = await directory.boundingBox();
+    expect(box).not.toBeNull();
+    const x = box!.x + Math.min(24, box!.width / 2);
+    const y = box!.y + box!.height / 2;
+
+    await directory.dispatchEvent('pointerdown', {
+      pointerId: 7,
+      pointerType: 'touch',
+      isPrimary: true,
+      button: 0,
+      clientX: x,
+      clientY: y,
+    });
+    await directory.dispatchEvent('pointermove', {
+      pointerId: 7,
+      pointerType: 'touch',
+      isPrimary: true,
+      clientX: x,
+      clientY: y + 20,
+    });
+    await page.waitForTimeout(550);
+    expect(await page.locator('.file-browser-directory-menu').count()).toBe(0);
+
+    await directory.dispatchEvent('pointerdown', {
+      pointerId: 8,
+      pointerType: 'touch',
+      isPrimary: true,
+      button: 0,
+      clientX: x,
+      clientY: y,
+    });
+    await page.waitForTimeout(550);
+
+    const menu = page.locator('.file-browser-directory-menu');
+    await expect.poll(() => menu.isVisible()).toBe(true);
+    await page.waitForTimeout(1100);
+    await directory.dispatchEvent('pointerup', {
+      pointerId: 8,
+      pointerType: 'touch',
+      isPrimary: true,
+      button: 0,
+      clientX: x,
+      clientY: y,
+      cancelable: true,
+    });
+    await directory.dispatchEvent('click');
+    const menuState = await page.evaluate(() => {
+      const menuEl = document.querySelector('.file-browser-directory-menu') as HTMLElement;
+      const modal = document.getElementById('workingDirectoryModal') as HTMLElement;
+      const rect = menuEl.getBoundingClientRect();
+      return {
+        path: menuEl.querySelector('.file-browser-directory-menu-path')?.textContent,
+        expanded: app.fileBrowserExpandedDirs.has('src'),
+        menuZ: Number(getComputedStyle(menuEl).zIndex),
+        modalZ: Number(getComputedStyle(modal).zIndex),
+        activeTag: document.activeElement?.tagName,
+        insideViewport:
+          rect.left >= 0 &&
+          rect.top >= 0 &&
+          rect.right <= document.documentElement.clientWidth &&
+          rect.bottom <= document.documentElement.clientHeight,
+      };
+    });
+    expect(menuState).toMatchObject({
+      path: '/repos/project/src',
+      expanded: false,
+      insideViewport: true,
+    });
+    expect(menuState.menuZ).toBeLessThan(menuState.modalZ);
+    expect(['INPUT', 'TEXTAREA']).not.toContain(menuState.activeTag);
+
+    await menu.getByRole('menuitem', { name: 'Set as current workspace' }).click();
+    await expect
+      .poll(() => page.evaluate(() => app.sessions.get('workspace-session')?.workingDir))
+      .toBe('/repos/project/src');
+
+    const result = await page.evaluate(() => {
+      const testWindow = window as typeof window & {
+        __workspaceRequests?: Array<{ url: string; method: string; body?: string }>;
+      };
+      return {
+        cached: app.getSessionWorkspaceAssignment('6eeaf98a-082f-4d8a-9073-87808600c924'),
+        requests: testWindow.__workspaceRequests || [],
+      };
+    });
+    expect(result.cached).toBe('/repos/project/src');
+    expect(result.requests[0]).toMatchObject({
+      url: '/api/sessions/workspace-session/working-directory',
+      method: 'PUT',
+      body: JSON.stringify({ workingDir: '/repos/project/src' }),
+    });
+  });
+
+  it('restores an assigned workspace when a conversation is resumed after reload', async () => {
+    const conversationId = 'c49fe0aa-a6f9-46a4-b47d-52a67a782f6c';
+    await page.evaluate(
+      ({ sessionId }) => {
+        const runtimeSession = {
+          id: 'old-runtime-session',
+          claudeSessionId: 'old-runtime-session',
+          name: 'Remembered session',
+          mode: 'claude',
+          status: 'idle',
+          pid: 1,
+          workingDir: '/repos/remembered',
+        };
+        app.sessions.set(runtimeSession.id, runtimeSession);
+        app.rememberSessionWorkspaceAssignment(runtimeSession, runtimeSession.workingDir);
+        app._onSessionUpdated({ ...runtimeSession, claudeSessionId: sessionId });
+      },
+      { sessionId: conversationId }
+    );
+
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await page.waitForFunction(() => typeof app?.resumeHistorySession === 'function');
+
+    const state = await page.evaluate(
+      async ({ sessionId }) => {
+        const originalFetch = window.fetch;
+        const originalSelectSession = app.selectSession;
+        const originalTerminal = app.terminal;
+        const requests: Array<{ url: string; method: string; body?: string }> = [];
+        window.fetch = async (input, init) => {
+          const url = String(input);
+          requests.push({
+            url,
+            method: init?.method || 'GET',
+            body: typeof init?.body === 'string' ? init.body : undefined,
+          });
+          if (url === '/api/sessions') {
+            return new Response(
+              JSON.stringify({ success: true, data: { session: { id: 'resumed-runtime-session' } } }),
+              { status: 200, headers: { 'Content-Type': 'application/json' } }
+            );
+          }
+          return new Response(JSON.stringify({ success: true }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        };
+        app.selectSession = async () => {};
+        app.terminal = {
+          clear() {},
+          writeln() {},
+          focus() {},
+        };
+
+        try {
+          const historyRecord = app.applySessionWorkspaceAssignment({
+            sessionId,
+            workingDir: '/repos/original',
+            sources: ['history'],
+          });
+          await app.resumeHistorySession(sessionId, '/repos/original', 'Remembered session');
+          return {
+            cached: app.getSessionWorkspaceAssignment(sessionId),
+            historyWorkingDir: historyRecord.workingDir,
+            requests,
+          };
+        } finally {
+          window.fetch = originalFetch;
+          app.selectSession = originalSelectSession;
+          app.terminal = originalTerminal;
+        }
+      },
+      { sessionId: conversationId }
+    );
+
+    expect(state.cached).toBe('/repos/remembered');
+    expect(state.historyWorkingDir).toBe('/repos/remembered');
+    const createRequest = state.requests.find((request) => request.url === '/api/sessions');
+    expect(createRequest).toMatchObject({ method: 'POST' });
+    expect(JSON.parse(createRequest!.body!)).toMatchObject({
+      workingDir: '/repos/remembered',
+      name: 'Remembered session',
+      resumeSessionId: conversationId,
+    });
+  });
+
   it('renders current changes and switches between compact and full diff on a phone', async () => {
     await page.evaluate(() => {
       const testWindow = window as typeof window & {
