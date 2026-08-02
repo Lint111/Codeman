@@ -74,7 +74,7 @@ When user says "COM":
 
 CI runs `npm run check:lockfile` on every push/PR, so lockfile drift fails the build even if the `version-packages` script is bypassed.
 
-**Version**: 1.8.3 (must match `package.json`)
+**Version**: 1.9.5 (must match `package.json`)
 
 ## Project Overview
 
@@ -183,7 +183,7 @@ Codeman is a Claude Code session manager with web interface and autonomous Ralph
 
 **Auto-resume on usage limit** (opt-in per session, top of the Respawn tab): when Claude halts on a subscription limit, `usage-limit-patterns.ts` (pure, unit-tested) parses the reset time and `SessionAutoOps` arms a timer for reset+2min, then sends Esc + `continue`. ⚠️ Respawn cycles are blocked while paused (`isLimitPaused` guard in `onIdleDetected`), which is what prevents `/clear` from wiping the paused conversation. Claude-mode only. → [architecture-invariants#auto-resume-on-usage-limit](docs/architecture-invariants.md#auto-resume-on-usage-limit)
 
-**Plan-usage chip** (statusLine telemetry, opt-in `showPlanUsageLimits`, default OFF): Codeman injects its own `statusLine.command` exporter which POSTs Claude's `rate_limits` blob to `POST /api/status-telemetry`. The exporter is identified by a marker, so it only ever adds/updates/removes a statusLine that is **ours**, never a user's hand-authored one, and it prints the footer through so the in-terminal statusline is not blanked. Claude-mode only; distinct from auto-resume, which reacts to the limit *message* rather than showing live %. → [architecture-invariants#plan-usage-chip-statusline-telemetry](docs/architecture-invariants.md#plan-usage-chip-statusline-telemetry), `docs/usage-limits-display-plan.md`
+**Plan-usage chip** (statusLine telemetry, `showPlanUsageLimits`, per-device: desktop default **ON**, handhelds OFF via the mobile block in `getDefaultSettings()`): resolve it ONLY through `planUsageChipEnabled()` in settings-ui.js, which backs all three call sites (the App Settings checkbox, the chip's visibility, and the `statusLineTelemetry` flag on session create). A chip shown without telemetry renders `—` forever. Codeman injects its own `statusLine.command` exporter which POSTs Claude's `rate_limits` blob to `POST /api/status-telemetry`. The exporter is identified by a marker, so it only ever adds/updates/removes a statusLine that is **ours**, never a user's hand-authored one, and it prints the footer through so the in-terminal statusline is not blanked. Claude-mode only; distinct from auto-resume, which reacts to the limit *message* rather than showing live %. → [architecture-invariants#plan-usage-chip-statusline-telemetry](docs/architecture-invariants.md#plan-usage-chip-statusline-telemetry), `docs/usage-limits-display-plan.md`
 
 **Passive background Bash wakeup**: Codeman's one real `PostToolUse(Bash)` hook uses `asyncRewake` to watch the session transcript for the matching background task completion, then exits 2 so Claude resumes without terminal-input injection. → [architecture-invariants#passive-background-bash-wakeup](docs/architecture-invariants.md#passive-background-bash-wakeup)
 
@@ -294,7 +294,7 @@ Frontend JS modules have `@fileoverview` with `@dependency`/`@loadorder` tags. L
 - **API endpoint**: Types in `src/types/` domain file, route in `src/web/routes/*-routes.ts`. Return the `ApiResponse` envelope (`{ success: true, data }`; errors via `createErrorResponse()` with proper status code). Validate with Zod schemas in `schemas.ts`.
 - **SSE event**: Add to `src/web/sse-events.ts` + `SSE_EVENTS` in `constants.js`, emit via `broadcast()`, handle in `app.js` (`addListener(`)
 - **Session setting**: Add to `SessionState`, include in `session.toState()`, call `persistSessionState()`
-- **App setting**: decide per-device vs synced first. Per-device keys go in the `displayKeys` set in settings-ui.js and must NOT be added to `SettingsUpdateSchema` (it is `.strict()`).
+- **App setting**: decide per-device vs synced first. Per-device keys go in the `displayKeys` set in settings-ui.js and must NOT be added to `SettingsUpdateSchema` (it is `.strict()`). ⚠️ Anything in `PUT /api/settings` that acts on a setting (the `toggleService` watcher calls) must resolve from **`merged`** (persisted + incoming), never from the raw request body: a partial PUT omits keys it doesn't intend to change, and `body.x ?? default` turns every omission into "apply the default" and silently resets live services. Pinned by `test/routes/system-routes-settings-partial-put.test.ts`.
 - **Hook event**: Add to `HookEventType`, add hook in `hooks-config.ts:generateHooksConfig()`, update `HookEventSchema`
 - **Mobile feature**: Add to relevant singleton, guard with `MobileDetection.isMobile()`. New header buttons must stay off phones (`test/mobile-header-buttons-policy.test.ts`).
 - **New test**: Pick unique port (search `const PORT =`). Route tests use `app.inject()` (no port needed) — see `test/routes/_route-test-utils.ts`.
@@ -322,7 +322,7 @@ Raw `npx vitest` skips `config/vitest.config.ts`; always use `npm test --` or pa
 
 **Config**: Vitest with `globals: true`, `fileParallelism: false`. Timeout 30s, teardown 60s. `config/vitest.ci.config.ts` = same minus the browser/perf excludes — keep the two configs in sync when changing shared options.
 
-**Tmux safety**: under vitest (`VITEST` env var, set automatically), `TmuxManager` no-ops ALL shell commands and becomes a pure in-memory mock — tests physically cannot create/kill/attach real tmux sessions (`IS_TEST_MODE` in `src/tmux-manager.ts`). Every docker IO path is no-op'd the same way. `test/setup.ts` additionally strips `CODEMAN_PASSWORD`/`CODEMAN_USERNAME` (so auth state from the running instance can't leak into tests) and `CODEMAN_GESTURE` (a shell-exported gesture flag would flip render-injection assertions).
+**Tmux safety**: under vitest (`VITEST` env var, set automatically), `TmuxManager` no-ops ALL shell commands and becomes a pure in-memory mock — tests physically cannot create/kill/attach real tmux sessions (`IS_TEST_MODE` in `src/tmux-manager.ts`). Every docker IO path is no-op'd the same way. `Session` is test-gated too: instead of attaching a real tmux client, it spawns a raw-mode echo PTY (`TEST_PTY_SCRIPT` in `src/session.ts`), so integration tests get a live input/output loop that echoes each byte exactly once. `test/setup.ts` gives every test file a temporary `HOME`/`USERPROFILE` (all `homedir()`-derived state, `~/.codeman` and `~/codeman-cases` included, resolves into a per-file fixture; the Playwright browser cache path is preserved), and additionally strips `CODEMAN_PASSWORD`/`CODEMAN_USERNAME` (so auth state from the running instance can't leak into tests) and `CODEMAN_GESTURE` (a shell-exported gesture flag would flip render-injection assertions). ⚠️ Raw `npx vitest` without `--config` skips `setup.ts` and with it the temp-HOME isolation.
 
 **Ports**: Pick unique ports manually, 3150+. Search `const PORT =` before adding new tests. Never 3000 (the live instance).
 

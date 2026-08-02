@@ -1,5 +1,104 @@
 # aicodeman
 
+## 1.9.5
+
+### Patch Changes
+
+- Background-Bash rewake hook, hooks self-heal that preserves user hooks, and test-harness isolation.
+  - New `PostToolUse(Bash)` hook (PR #176): a self-contained `node -e` helper watches the session transcript for a background command's completion notification and uses Claude Code's `asyncRewake` to wake an idle agent (exit code 2), without injecting terminal input that could submit a user's draft. Works on Claude Code 2.1.207+; older CLIs strip the fields harmlessly.
+  - Hooks self-heal (`refreshStaleHookSecret` renamed to `refreshStaleCodemanHooks`) now replaces only Codeman-owned handlers, preserving user events, matchers, and sibling handlers in mixed configurations; `writeHooksConfig` merges instead of clobbering the hooks key at case creation (PR #176).
+  - Rewake helper hardening: self-terminates on its own 6h deadline and when orphaned; the marker is versioned (V2) with a version-agnostic ownership prefix so future script updates replace older handlers instead of duplicating them.
+  - Hook timeout units fixed: the hook `timeout` field is seconds (the CLI multiplies by 1000), so `HOOK_TIMEOUT_MS = 10000` gave curl hooks a ~2.8-hour effective timeout; now `HOOK_TIMEOUT_SECONDS = 10`.
+  - Test-harness isolation (PR #175): every test file gets a temporary `HOME`/`USERPROFILE` so tests cannot touch real Codeman state or delete real case directories, and `Session` attaches a raw-mode echo PTY instead of a real tmux client under Vitest. Fixes the quick-start suite deleting the real `~/codeman-cases/testcase`.
+  - CI stability: drain console-log rpc forwards before worker teardown (fixes a run-failing `EnvironmentTeardownError` with all tests passing); `test/webview-proxy.test.ts` no longer accidentally runs under the jsdom environment via a directive named in a comment.
+  - Release workflow pins the GitHub "Latest" badge to the Codeman release.
+
+## 1.9.4
+
+### Patch Changes
+
+- Fix a latent bug where a partial settings PUT silently reset live service state, and trim the `xterm-zerolag-input` README callout.
+  - **`PUT /api/settings` no longer resets watchers on a partial body.** The three `toggleService` calls (subagent watcher, workflow-run watcher, image watcher) read the raw request body with `??` defaults, so every key a caller omitted was treated as "apply the default". A body of just `{statusLineTelemetry:true}` would START the subagent watcher and STOP the workflow and image watchers, undoing the persisted config. They now resolve from `merged` (persisted settings + incoming), the same convention the `tmuxHistoryLimit` branch in that handler already used, so any PUT reconciles services to the effective stored state. Nothing triggered this in practice because every shipped client sends a full settings payload rebuilt from the DOM, but it was a trap for the next partial-update caller.
+  - **Regression test**: `test/routes/system-routes-settings-partial-put.test.ts` (4 cases) pins both directions, omitted keys preserve state and explicit keys still take effect. Verified to fail against the pre-fix handler.
+  - **CLAUDE.md** records the rule under "Adding Features → App setting": anything acting on a setting in that handler must resolve from `merged`, never the request body.
+  - **`xterm-zerolag-input` README**: removed the links line (getcodeman.com / install one-liner / star link) from the Codeman callout above the demo GIF. The callout keeps its links in the heading and body.
+
+## 1.9.3
+
+### Patch Changes
+
+- Plan-usage chip now defaults ON on desktop, plus the reworked `xterm-zerolag-input` README.
+  - **Plan-usage chip defaults ON (desktop).** The `showPlanUsageLimits` chip (live 5-hour and weekly plan usage from the Claude statusline) used to be opt-in and default OFF, so most users never saw it. Desktop now defaults ON; handhelds still default OFF so the phone header stays minimal and the `mobile-header-buttons-policy` guard keeps passing. Devices with an explicitly stored preference keep whatever they chose, so nobody's OFF gets overridden.
+  - **One resolver behind the chip.** Added `planUsageChipEnabled()` in settings-ui.js and routed all three call sites through it: the App Settings checkbox, the chip's visibility, and the create-time `statusLineTelemetry` flag in session-ui.js. Those three had independent `?? false` / `=== true` defaults, and a chip revealed without the telemetry flag renders `—` forever, so a default flip on one site alone would have shipped a permanently empty chip.
+  - **Cron button comment corrected.** The App Settings comment claimed "Cron button defaults ON" while the code, the template (`btn-cron--hidden`) and the CSS all default it OFF. Verified against a fresh browser profile: the button is hidden and its checkbox unchecked out of the box. Comment now matches, and states why the two halves stay consistent.
+  - **Docs.** CLAUDE.md, `docs/architecture-invariants.md` and `docs/usage-limits-display-plan.md` updated for the new default and the single-resolver rule; the stale `styles.css` comment claiming the server strips the chip's hidden class at render was corrected (display is per-device, so the client reveals it).
+  - **`xterm-zerolag-input` README rework** (0.1.5 shipped the content; this republishes with the graphic and promo changes): replaced the misaligned 8-line keystroke-flow diagram with a two-line stock-vs-zerolag contrast, added a Codeman callout above the demo GIF with links to getcodeman.com and the repo, and rewrote the Origin section so it argues the extraction story instead of repeating the promo.
+
+## 1.9.2
+
+### Patch Changes
+
+- Rewrite the `xterm-zerolag-input` package README as a value-first document and correct the drift that had accumulated against the source.
+  - Added the side-by-side phone demo GIF (`docs/images/zerolag-demo-20260728.gif`) as the hero image, referenced by absolute raw URL so it renders on npmjs.com as well as GitHub. The two-phone comparison shows 0ms local echo next to a 600ms-2.7s server echo on the same session.
+  - New "Why this one" comparison table, an explicit list of target use cases (SSH web clients, cloud IDEs, mobile terminals, container consoles), and a bundle-size badge (6.1 kB gzipped, measured from the ESM build).
+  - Corrected the test-count badge from 78 to the actual 175 tests across 5 files, in both the package README and the Published Packages section of the root README.
+  - Removed the stale "Unicode/emoji rendered at single-cell width" limitation. CJK, fullwidth forms and emoji have had double-width rendering and visual-column positioning since the wide-character fix; the honest remaining caveat (per-code-point width summing over-counts ZWJ grapheme clusters) replaces it.
+  - Documented the previously undocumented public `setPrompt()` method for switching prompt strategies at runtime, and the new "Wide characters (CJK, emoji)" integration section covering the optional `Unicode11Addon` path and the built-in range-table fallback.
+  - Documented `backgroundColor: 'transparent'`, corrected the `foregroundColor` default, and updated the grid-alignment math to reflect visual-column positioning rather than character index.
+
+  No source changes, docs only.
+
+## 1.9.1
+
+### Patch Changes
+
+- Narrow the Run dropdown, and close the last two gaps in web-tab asset rewriting.
+
+  **The Run dropdown was pinned at its full width.** It capped at 300px, and the recent-session rows wanted 326px, so it always rendered at the cap and reached further across the terminal than it needed to. Now 250px, chosen as the width at which a `~/<dir>/<repo>` + timestamp row still fits whole, since identifying a session to resume is what that list is for. Three fixes were needed to make the narrower menu degrade instead of clip: the saved-URL label now has its own element, because `text-overflow` on the row button did nothing (a bare text node inside a flex container becomes an anonymous flex item that ellipsis cannot reach); `.hist-dir` got `min-width: 0`, without which a flex item refuses to shrink below its own text and pushes the date out of the box; and history rows are held to the container width, because the list's `overflow-y: auto` implicitly makes `overflow-x: auto` and let each row size to its own content and scroll sideways. Phone and tablet widths are unchanged, being set separately in `mobile.css`.
+
+  **A dashboard's own `/api/...` assets are relayed again.** The `Referer`-keyed 404 fallback, which rescues a root-absolute asset that no rewrite layer could reach, refused everything under `/api` outright. Dashboards commonly serve their assets from exactly that namespace, so those requests had no rescue at all. The refusal is now precise: the relay runs before the API-shaped 404, and the auth exemption refuses only paths that resolve to a REAL Codeman route, with `/ws/` and `/q/` still refused by prefix.
+
+  Two findings shaped that fence, both from probing Fastify rather than reading it. `hasRoute()` matches the registered PATTERN literally, so `/api/sessions/abc` reports no match against a registered `/api/sessions/:id` and would have granted an unauthenticated exemption on a live session-scoped route; `findRoute()` performs the real lookup and is what the fence uses. And `@fastify/static` is mounted at `/`, so it registers a root catch-all matching every path, which has to count as "no real route" or the fence would refuse every referer-form request and break the rescue that already worked. A root catch-all is distinguishable because it is the only route whose wildcard param comes back equal to the whole request path. The fence fails closed, and both edges are pinned in `test/webview-auth-exemption.test.ts`.
+
+  **`url()` inside runtime CSS is rewritten.** Measuring the fallback against a purpose-built dashboard showed one sink no relay can reach: a `<style>` element built by page script has no URL of its own, so the browser sends an EMPTY `Referer` with the image request it triggers. The injected URL shim now rewrites root-absolute `url()` in `<style>` blocks, both as markup and when a `<style>` node is inserted. Verified in Chromium: a stylesheet-only `/api/hero.png` and a runtime `<style>` `/api/late.png` both load, where both previously failed. The remaining known gap is self-navigation via `location.href`, which cannot be patched because `Location.href` is unforgeable.
+
+## 1.9.0
+
+### Minor Changes
+
+- 2667150: feat(mobile): browse and insert local file and folder paths
+
+  Add a root-confined filesystem picker to Link Existing and the extended mobile
+  keyboard bar. Selected paths remain editable at the active prompt, supported
+  images/documents/text files open in a safe inline preview, and a new one-tap
+  action clears only the current unsent input without invoking `/clear`.
+
+### Patch Changes
+
+- 3cff98f: Fix two multi-user scoping holes in the new filesystem path picker. `GET /api/filesystem/browse` and `GET /api/filesystem/preview` accept an optional `sessionId` that contributes the session's working directory as a browse root, but they resolved it straight off the session map without an ownership check, unlike the nine other session-scoped handlers in the same route file. A non-admin could therefore pin another user's working directory as a root simply by passing their session id, then list and preview files under it. Both endpoints now run `canAccessOwned` and report 404, which also avoids confirming that a session id exists.
+
+  Separately, `Home` and `CASES_DIR` were unconditional browse roots for every caller. Per-user spaces live at `<USER_SPACES_DIR>/<username>`, which is inside `homedir()`, so the `Home` root alone exposed every other user's workspace to any authenticated user. In multi-user mode a non-admin now gets only their own space plus anything explicitly listed in `CODEMAN_FILE_PICKER_ROOTS`; `/mnt/d` is no longer offered by default, since a broad host mount should be an explicit operator decision in a multi-user deployment. Admins keep the host-wide roots, and single-user mode is unchanged.
+
+  Both holes are regression-guarded in `test/routes/file-routes.test.ts`, verified to fail against the previous code. Multi-user mode is opt-in and off by default, so single-user installs were never affected.
+
+- Web tabs: delete saved URLs from the Run dropdown, and fix images in proxied dashboards.
+
+  **Saved URLs are now manageable from the dropdown.** Each row under "Web / URL" gains a gear and an `x`, so a URL can be edited or deleted without first opening it as a tab. Previously the only delete path ran through the gear on an open tab, which was a dead end for a URL you no longer wanted open at all. Both controls stay permanently visible rather than hover-revealed, because the same menu is used on touch, and they get a larger hit box there. Deleting leaves the dropdown open on the remaining rows, and deleting the dashboard that is currently open also closes its tab and unmounts its frame.
+
+  **Runtime-injected images no longer 404.** A dashboard that renders its own markup from script (`card.innerHTML = '<img src="/api/hero?slug=x">'`, `img.src = '/api/slide'`) escaped every rewrite layer at once: `<base href>` never applies to a root-absolute URL, the server-side attribute rewrite only ever sees the initial document, and `runtimeUrlShim()` patched only `fetch`, `XMLHttpRequest`, `WebSocket` and `EventSource`. Those requests landed on Codeman's own root and 404'd, with a symptom that reads as an upstream fault: the dashboard's data loaded while every image stayed broken.
+
+  The shim now also covers the DOM URL sinks, so the request is never emitted in the first place and neither the `/api` fence in the 404 fallback nor the one in the auth middleware had to move. It wraps `innerHTML`, `outerHTML`, `insertAdjacentHTML` (including on `ShadowRoot`), `setAttribute`/`setAttributeNS`, and the `src`/`srcset`/`href`/`poster`/`data`/`action` property setters on img, source, media, video poster, script, iframe, embed, track, link, anchor, area, object and form, with a `MutationObserver` as a last net for sinks not patched above. Every rewrite routes through the same idempotent helper, which matters because unlike the server-side rewrite this one sees markup that may already be proxied, and a page re-injecting its own `outerHTML` would otherwise double-prefix. Everything is defensively guarded and marked so a double injection cannot wrap an already-wrapped setter.
+
+  Measured against a real dashboard: 693 image elements, 0 of them under the proxy prefix and 0 of 23 in-viewport images decoded before, 693 and 23 of 23 after. Covered by a new jsdom suite over the shim's DOM half and a new frontend suite over the dropdown rows. Known remaining gaps are documented in `docs/web-tabs.md`: a root-absolute `url()` inside a stylesheet injected at runtime, and self-navigation via `location.href`, which cannot be patched because `Location.href` is unforgeable.
+
+  Also in this release: a value-first README overhaul pointing at getcodeman.com, and the QR-auth distribution test now uses a chi-square check instead of a max-deviation threshold that failed on random variance.
+
+- bca56b4: Normalize Claude conversations in the response viewer. A Claude transcript is an append-only event log, so one logical exchange spans many JSONL rows: tool-result rows, meta/image/skill rows, compact summaries, task and team notifications, sidechains, replayed assistant snapshots, and multi-block assistant output. The viewer rendered a card per row, which produced duplicate and truncated cards that read as lost responses. Cards are now built at real human-turn boundaries, replayed assistant snapshots are deduplicated, and sidechain rows (which belong to subagents, not the main conversation) no longer leak in. An identical prompt that legitimately recurs after an assistant reply is still kept as its own turn.
+
+  Measured over 40 real transcripts: 3108 cards became 621, duplicate cards dropped from 74 to 8 (all of them genuinely repeated turns), no assistant text was lost, and the non-`context=full` last-response text was byte-identical on every file.
+
+  Also rebinds recovered sessions to their transcript. `reconcileSessions()` can recover a lost mux session as a `restored-<uuid8>` placeholder with a stale working directory, which made transcript lookup by cwd find nothing. The placeholder still carries the first eight characters of the conversation UUID, so the viewer now rebinds to the matching top-level transcript when exactly one candidate matches.
+
 ## 1.8.3
 
 ### Patch Changes

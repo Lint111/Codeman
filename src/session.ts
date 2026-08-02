@@ -193,6 +193,13 @@ export function isAltScreenStripMode(mode: SessionMode): boolean {
 const DEFAULT_PTY_COLS = 120;
 const DEFAULT_PTY_ROWS = 40;
 const TMUX_DISPLAY_TIMEOUT_MS = 2000;
+const IS_TEST_MODE = !!process.env.VITEST;
+/**
+ * Echo transport for the test-mode PTY attach. Raw mode disables the tty line
+ * discipline, so each input byte flows back exactly once and immediately; without
+ * it, tty echo doubles every line and canonical buffering holds bytes until Enter.
+ */
+const TEST_PTY_SCRIPT = 'if (process.stdin.isTTY) process.stdin.setRawMode(true); process.stdin.pipe(process.stdout);';
 /** Delay before the in-container Claude CLI version probe (lets the container start). */
 const DOCKER_CLI_VERSION_PROBE_DELAY_MS = 3000;
 
@@ -1291,16 +1298,23 @@ export class Session extends EventEmitter {
       // No extra sleep — createSession() already waits for tmux readiness
     }
 
-    // Attach to the mux session via PTY
-    // Prevent tmux from letting the newest browser attach dictate global window
-    // size; accepted Codeman resize events update it explicitly below.
-    mux.setManualWindowSize?.(this._muxSession!.muxName);
+    // Integration tests need a live input/output transport without attaching to
+    // the host's tmux server or agent CLI. Production still uses the real mux.
+    if (!IS_TEST_MODE) {
+      // Prevent tmux from letting the newest browser attach dictate global window
+      // size; accepted Codeman resize events update it explicitly below.
+      mux.setManualWindowSize?.(this._muxSession!.muxName);
+    }
     // Query existing tmux window size so re-attach matches (avoids flicker from 120x40 default).
     // MUST go through the dedicated socket (mux.muxSocket); a bare `tmux display` hits the
     // default server, always fails for our socketed sessions, and silently falls back to 120x40.
-    const { cols: ptyCols, rows: ptyRows } = queryTmuxWindowSize(this._muxSession!.muxName, mux.muxSocket);
+    const { cols: ptyCols, rows: ptyRows } = IS_TEST_MODE
+      ? { cols: DEFAULT_PTY_COLS, rows: DEFAULT_PTY_ROWS }
+      : queryTmuxWindowSize(this._muxSession!.muxName, mux.muxSocket);
+    const attachCommand = IS_TEST_MODE ? process.execPath : mux.getAttachCommand();
+    const attachArgs = IS_TEST_MODE ? ['-e', TEST_PTY_SCRIPT] : mux.getAttachArgs(this._muxSession!.muxName);
     try {
-      this.ptyProcess = pty.spawn(mux.getAttachCommand(), mux.getAttachArgs(this._muxSession!.muxName), {
+      this.ptyProcess = pty.spawn(attachCommand, attachArgs, {
         name: 'xterm-256color',
         cols: ptyCols,
         rows: ptyRows,
@@ -2718,7 +2732,7 @@ export class Session extends EventEmitter {
     if (this.ptyProcess && (dimsChanged || options.force || restoresMobileOverride)) {
       this._ptyCols = cols;
       this._ptyRows = rows;
-      if (this._mux && this._muxSession) {
+      if (!IS_TEST_MODE && this._mux && this._muxSession) {
         this._mux.resizeWindow?.(this._muxSession.muxName, cols, rows);
       }
       this.ptyProcess.resize(cols, rows);
