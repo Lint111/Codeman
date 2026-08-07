@@ -143,6 +143,7 @@ Object.assign(CodemanApp.prototype, {
           ? this.sessions?.get(this.activeSessionId)?.mode || ''
           : '',
       isLocalEchoEnabled: () => this._localEchoEnabled,
+      isEnterMultilineDraftEnabled: () => this._enterMultilineDraftEnabled(),
       isRestoringDraft: () => this._restoringFlushedState,
       captureDraft: () => this._captureActiveSessionDraft(),
       setDraft: (sessionId, draft) =>
@@ -1818,6 +1819,32 @@ Object.assign(CodemanApp.prototype, {
   // ═══════════════════════════════════════════════════════════════
   // Terminal Rendering
   // ═══════════════════════════════════════════════════════════════
+
+  /**
+   * Whether opt-in multi-line drafting is active for the current session.
+   *
+   * Requires local echo: that is the only mode with a client-side draft buffer
+   * to insert a line break into. Without it nothing is buffered locally, so
+   * Enter must keep submitting immediately — the contract every CLI expects.
+   */
+  _enterMultilineDraftEnabled() {
+    if (this._localEchoEnabled !== true) return false;
+    // Read through the same per-device storage path the other input settings
+    // use; cached per keystroke burst so Enter does not hit localStorage on
+    // every press.
+    const now = Date.now();
+    if (!this._enterDraftSettingAt || now - this._enterDraftSettingAt > 1000) {
+      this._enterDraftSetting = this.loadAppSettingsFromStorage?.()?.enterMultilineDraft === true;
+      this._enterDraftSettingAt = now;
+    }
+    return this._enterDraftSetting === true;
+  },
+
+  // NOTE: the draft-inspection and newline-stripping halves of this feature
+  // live in TerminalInputController (`resolveEnterAction` / `submitDraft`) on
+  // this branch, which owns the draft buffer. Only the SETTING reader stays
+  // here, because it is the terminal surface that knows local-echo state; the
+  // controller calls it through the `isEnterMultilineDraftEnabled` option.
 
   /**
    * Check if terminal viewport is at or near the bottom.

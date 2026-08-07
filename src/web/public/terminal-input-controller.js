@@ -21,6 +21,12 @@ class TerminalInputController {
     this._getSessionMode = typeof options.getSessionMode === 'function' ? options.getSessionMode : () => '';
     this._isLocalEchoEnabled =
       typeof options.isLocalEchoEnabled === 'function' ? options.isLocalEchoEnabled : () => false;
+    // Opt-in multi-line Enter drafting. Defaults to ON when the host does not
+    // supply a reader so the controller's own unit tests keep exercising the
+    // two-Enter path; the real host wires it to the `enterMultilineDraft`
+    // per-device setting, which ships OFF.
+    this._isEnterMultilineDraftEnabled =
+      typeof options.isEnterMultilineDraftEnabled === 'function' ? options.isEnterMultilineDraftEnabled : () => true;
     this._isRestoringDraft = typeof options.isRestoringDraft === 'function' ? options.isRestoringDraft : () => false;
     this._captureDraft = typeof options.captureDraft === 'function' ? options.captureDraft : () => {};
     this._setDraft = typeof options.setDraft === 'function' ? options.setDraft : () => {};
@@ -332,6 +338,8 @@ class TerminalInputController {
    */
   resolveEnterAction() {
     if (!this._isLocalEchoEnabled()) return 'submit';
+    // Feature off: Enter keeps its immediate-send contract even with a draft.
+    if (!this._isEnterMultilineDraftEnabled()) return 'submit';
     const overlay = this._getOverlay();
     const pending = overlay?.pendingText ?? '';
     const composing = overlay?.compositionText || '';
@@ -354,7 +362,11 @@ class TerminalInputController {
    */
   submitDraft() {
     const overlay = this._getOverlay();
-    if (this._isLocalEchoEnabled() && (overlay?.pendingText ?? '').endsWith('\n')) {
+    if (
+      this._isLocalEchoEnabled() &&
+      this._isEnterMultilineDraftEnabled() &&
+      (overlay?.pendingText ?? '').endsWith('\n')
+    ) {
       overlay.removeChar();
       this._captureDraft();
     }

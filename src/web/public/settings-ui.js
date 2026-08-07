@@ -376,6 +376,8 @@ Object.assign(CodemanApp.prototype, {
       settings.mobileControlHaptics ?? defaults.mobileControlHaptics ?? true;
     document.getElementById('appSettingsMobileControlSound').checked =
       settings.mobileControlSound ?? defaults.mobileControlSound ?? false;
+    document.getElementById('appSettingsEnterMultilineDraft').checked =
+      settings.enterMultilineDraft ?? defaults.enterMultilineDraft ?? false;
     document.getElementById('appSettingsTabTwoRows').checked = settings.tabTwoRows ?? defaults.tabTwoRows ?? false;
     // Claude CLI settings
     const claudeModeSelect = document.getElementById('appSettingsClaudeMode');
@@ -1728,6 +1730,7 @@ Object.assign(CodemanApp.prototype, {
       mobileTerminalControlsEnabled: document.getElementById('appSettingsMobileTerminalControls').checked,
       mobileControlHaptics: document.getElementById('appSettingsMobileControlHaptics').checked,
       mobileControlSound: document.getElementById('appSettingsMobileControlSound').checked,
+      enterMultilineDraft: document.getElementById('appSettingsEnterMultilineDraft').checked,
       webglRendererEnabled: document.getElementById('appSettingsWebglRenderer').checked,
       tabTwoRows: document.getElementById('appSettingsTabTwoRows').checked,
       skin: document.getElementById('appSettingsSkin').value,
@@ -2547,7 +2550,7 @@ Object.assign(CodemanApp.prototype, {
           'showMonitor', 'showProjectInsights', 'showFileBrowser', 'showSubagents',
           'subagentActiveTabOnly', 'tabTwoRows', 'localEchoEnabled', 'cjkInputEnabled',
           'mobileTerminalControlsEnabled', 'mobileNavigationPadEnabled', 'extendedKeyboardBar',
-          'mobileControlHaptics', 'mobileControlSound',
+          'mobileControlHaptics', 'mobileControlSound', 'enterMultilineDraft',
           'skin', 'showPlanUsageLimits', 'showAttachmentsButton', 'showFileViewerButton', 'webglRendererEnabled',
           'language',
           'terminalWheelLocalScrollback',
