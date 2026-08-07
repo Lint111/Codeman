@@ -58,6 +58,15 @@ export const SCHEDULED_RUN_MAX_AGE = 60 * 60 * 1000;
 /** How often the cron loop wakes to check for due jobs (ms). */
 export const CRON_TICK_INTERVAL = 30 * 1000;
 
+/**
+ * Viewer mode: how often to re-assert `window-size latest` on panes a peer
+ * Codeman pinned back to `manual` (ms). Each sweep is one `show-window-options`
+ * per tracked pane, so keep it well above the interactive resize path; 10s
+ * bounds how long a viewer can be stuck at a peer's size without making the
+ * sweep itself a load source.
+ */
+export const VIEWER_SIZE_SWEEP_INTERVAL = 10 * 1000;
+
 /** Max attempts (× 500ms) to poll a launched session for CLI readiness before sending the prompt. */
 export const CRON_READY_MAX_ATTEMPTS = 60;
 

@@ -245,6 +245,19 @@ export interface TerminalMultiplexer extends EventEmitter {
   /** Pin a mux window so client attaches do not automatically dictate its size. */
   setManualWindowSize?(muxName: string): boolean;
 
+  /**
+   * Let the mux size a window to its most-recently-active client instead of
+   * pinning it. Used in viewer mode, where several Codeman instances share one
+   * socket and no single instance may hold authoritative geometry.
+   */
+  setLatestWindowSize?(muxName: string): boolean;
+
+  /**
+   * Viewer-mode self-heal: re-assert most-recently-active sizing on panes a
+   * peer instance has pinned back to manual. Returns the corrected names.
+   */
+  restoreLatestWindowSize?(muxNames: string[]): string[];
+
   /** Explicitly resize a mux window after Codeman accepts a terminal resize. */
   resizeWindow?(muxName: string, cols: number, rows: number): boolean;
 
