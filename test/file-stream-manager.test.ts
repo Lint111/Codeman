@@ -118,6 +118,41 @@ describe('FileStreamManager', () => {
       expect(mockSpawn).toHaveBeenCalledWith('tail', ['-f', '-n', '100', expect.any(String)], expect.any(Object));
     });
 
+    it('allows a file inside an explicitly authorized read root', async () => {
+      mockSpawn.mockReturnValue(createMockProcess());
+      const scratchpad = '/tmp/claude-1000/-home-liory-project/parent/scratchpad';
+
+      const result = await manager.createStream({
+        sessionId: 'session-1',
+        filePath: `${scratchpad}/worker/report.md`,
+        workingDir: '/home/liory/project',
+        allowedReadRoots: [scratchpad],
+        onData: vi.fn(),
+        onEnd: vi.fn(),
+        onError: vi.fn(),
+      });
+
+      expect(result.success).toBe(true);
+    });
+
+    it('does not let an authorized read root admit a sibling path', async () => {
+      const scratchpad = '/tmp/claude-1000/-home-liory-project/parent/scratchpad';
+
+      const result = await manager.createStream({
+        sessionId: 'session-1',
+        filePath: '/tmp/claude-1000/-home-liory-project/other/scratchpad/report.md',
+        workingDir: '/home/liory/project',
+        allowedReadRoots: [scratchpad],
+        onData: vi.fn(),
+        onEnd: vi.fn(),
+        onError: vi.fn(),
+      });
+
+      expect(result.success).toBe(false);
+      expect(result.error).toMatch(/authorized read root/i);
+      expect(mockSpawn).not.toHaveBeenCalled();
+    });
+
     it('should reject when file does not exist', async () => {
       vi.mocked(existsSync).mockReturnValue(false);
 

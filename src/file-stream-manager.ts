@@ -81,6 +81,8 @@ interface CreateStreamOptions {
   filePath: string;
   /** Working directory for path validation */
   workingDir: string;
+  /** Additional request-authorized read roots (for example an owned agent scratchpad). */
+  allowedReadRoots?: string[];
   /** Number of historical lines to show (default: 50) */
   lines?: number;
   /** Callback for data */
@@ -143,7 +145,16 @@ export class FileStreamManager extends EventEmitter {
    * @returns Result with stream ID on success, error on failure
    */
   async createStream(options: CreateStreamOptions): Promise<CreateStreamResult> {
-    const { sessionId, filePath, workingDir, lines = DEFAULT_TAIL_LINES, onData, onEnd, onError } = options;
+    const {
+      sessionId,
+      filePath,
+      workingDir,
+      allowedReadRoots = [],
+      lines = DEFAULT_TAIL_LINES,
+      onData,
+      onEnd,
+      onError,
+    } = options;
 
     // Check concurrent stream limit for this session
     const currentCount = this.sessionStreamCounts.get(sessionId) || 0;
@@ -155,7 +166,7 @@ export class FileStreamManager extends EventEmitter {
     }
 
     // Resolve and validate path
-    const validationResult = this.validatePath(filePath, workingDir);
+    const validationResult = this.validatePath(filePath, workingDir, allowedReadRoots);
     if (!validationResult.valid) {
       return { success: false, error: validationResult.error };
     }
@@ -183,7 +194,7 @@ export class FileStreamManager extends EventEmitter {
       const resolvedPath = realpathSync(absolutePath);
       if (resolvedPath !== absolutePath) {
         // Symlink target changed — re-validate against allowed paths
-        const recheck = this.validatePath(resolvedPath, workingDir);
+        const recheck = this.validatePath(resolvedPath, workingDir, allowedReadRoots);
         if (!recheck.valid) {
           return { success: false, error: recheck.error };
         }
@@ -372,7 +383,8 @@ export class FileStreamManager extends EventEmitter {
    */
   private validatePath(
     filePath: string,
-    workingDir: string
+    workingDir: string,
+    allowedReadRoots: string[] = []
   ): { valid: boolean; absolutePath?: string; error?: string } {
     // Expand ~ to home directory
     let expandedPath = filePath;
@@ -401,17 +413,22 @@ export class FileStreamManager extends EventEmitter {
     // tested design choice for tailing system/app logs, documented as such in
     // docs/security-architecture.md (security review M5). /tmp is excluded
     // (world-writable).
-    const allowedPaths = [normalizedWorkingDir, '/var/log', resolve(homedir(), 'logs')];
+    const allowedPaths = [
+      normalizedWorkingDir,
+      '/var/log',
+      resolve(homedir(), 'logs'),
+      ...allowedReadRoots.map((path) => resolve(path)),
+    ];
 
     const isAllowed = allowedPaths.some((allowed) => {
       const rel = relative(allowed, absolutePath);
-      return rel && !rel.startsWith('..') && !isAbsolute(rel);
+      return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel));
     });
 
     if (!isAllowed) {
       return {
         valid: false,
-        error: `Path must be within working directory or allowed log directories`,
+        error: `Path must be within the working directory or an authorized read root`,
       };
     }
 

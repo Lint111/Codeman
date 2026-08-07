@@ -4,7 +4,7 @@
  */
 
 import { FastifyInstance, type FastifyReply } from 'fastify';
-import { basename as pathBasename, extname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { basename as pathBasename, dirname, extname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { createReadStream, realpathSync, type ReadStream } from 'node:fs';
 import fs from 'node:fs/promises';
 import { homedir } from 'node:os';
@@ -38,6 +38,8 @@ import {
   resolveRepositoryBrowseRoot,
 } from '../../git-repository-browser.js';
 import { subagentWatcher } from '../../subagent-watcher.js';
+import { parseClaudeScratchpadContext } from '../../codex-dispatch-watcher.js';
+import { openDiffInVsCode, openWorkspaceInVsCode } from '../../vscode-launcher.js';
 import {
   CASES_DIR,
   canAccessOwned,
@@ -45,6 +47,7 @@ import {
   getAuthUser,
   isWorkingDirAllowed,
   parseBody,
+  requireAdmin,
   validateSessionFilePath,
 } from '../route-helpers.js';
 import type { FastifyRequest } from 'fastify';
@@ -52,7 +55,7 @@ import type { SessionAttachmentHistoryItem, SessionState } from '../../types/ses
 import { isSensitivePath } from '../sensitive-path.js';
 import { SseEvent } from '../sse-events.js';
 import type { ConfigPort, EventPort, SessionPort } from '../ports/index.js';
-import { FilesystemBrowseQuerySchema, FilesystemPreviewQuerySchema } from '../schemas.js';
+import { FilesystemBrowseQuerySchema, FilesystemPreviewQuerySchema, RepositoryEditorOpenSchema } from '../schemas.js';
 
 const MIME_TYPES: Record<string, string> = {
   png: 'image/png',
@@ -543,6 +546,40 @@ function appendFileBrowserContext(url: string, scope?: string, agentId?: string)
   return `${parsed.pathname}${parsed.search}`;
 }
 
+/**
+ * Admit Claude's per-conversation scratchpad as a read-only tail root only when
+ * its encoded owner, project, and conversation all match this live session.
+ */
+function resolveOwnedClaudeScratchpadRoot(
+  filePath: string,
+  session: { id: string; workingDir: string; claudeSessionId?: string | null }
+): string | undefined {
+  const expectedUid = typeof process.getuid === 'function' ? process.getuid() : undefined;
+  if (expectedUid === undefined) return undefined;
+
+  const absolutePath = resolve(filePath);
+  let cursor = absolutePath;
+  while (cursor !== dirname(cursor) && pathBasename(cursor) !== 'scratchpad') {
+    cursor = dirname(cursor);
+  }
+  if (pathBasename(cursor) !== 'scratchpad') return undefined;
+
+  const context = parseClaudeScratchpadContext(cursor);
+  if (!context) return undefined;
+  if (context.projectHash !== subagentWatcher.getProjectHashForDir(session.workingDir)) return undefined;
+
+  const claudeRuntimeDir = pathBasename(dirname(dirname(dirname(cursor))));
+  if (claudeRuntimeDir !== `claude-${expectedUid}`) return undefined;
+
+  const directIds = [session.id, session.claudeSessionId].filter(Boolean) as string[];
+  const directMatch = directIds.includes(context.sessionId);
+  const restoredMatch = directIds.some((id) => {
+    const prefix = id.match(/^restored-([0-9a-f]{8,})$/i)?.[1];
+    return Boolean(prefix && context.sessionId.startsWith(prefix));
+  });
+  return directMatch || restoredMatch ? cursor : undefined;
+}
+
 function getSessionAttachmentHistory(
   ctx: SessionPort & ConfigPort,
   sessionId: string,
@@ -740,6 +777,36 @@ export function registerFileRoutes(app: FastifyInstance, ctx: SessionPort & Even
       };
     } catch (err) {
       return createErrorResponse(ApiErrorCode.INVALID_INPUT, getErrorMessage(err));
+    }
+  });
+
+  app.post('/api/sessions/:id/repository/open-editor', async (req, reply) => {
+    if (isMultiUserMode() && !requireAdmin(req, reply)) return;
+    const { id } = req.params as { id: string };
+    const session = findSessionOrFail(ctx, id, req);
+    const body = parseBody(RepositoryEditorOpenSchema, req.body, 'Invalid editor request');
+    try {
+      const sessionState = session.toState();
+      if (sessionState.remote || sessionState.docker) {
+        throw new Error('Host editor launch is available only for local sessions');
+      }
+      const selectedRoot = await resolveFileBrowserRequestWorkingDir(
+        session.workingDir,
+        body.scope,
+        body.agentId,
+        session.claudeSessionId || session.id,
+        session.id,
+        req
+      );
+      if (body.path) {
+        const detail = await getGitDiffDetail(selectedRoot, 'current', body.path, body.commit);
+        await openDiffInVsCode(detail);
+        return { success: true, data: { kind: 'diff' } };
+      }
+      await openWorkspaceInVsCode(selectedRoot);
+      return { success: true, data: { kind: 'workspace' } };
+    } catch (err) {
+      return createErrorResponse(ApiErrorCode.OPERATION_FAILED, getErrorMessage(err));
     }
   });
 
@@ -1635,6 +1702,9 @@ export function registerFileRoutes(app: FastifyInstance, ctx: SessionPort & Even
       sessionId: id,
       filePath,
       workingDir: session.workingDir,
+      allowedReadRoots: [resolveOwnedClaudeScratchpadRoot(filePath, session)].filter((path): path is string =>
+        Boolean(path)
+      ),
       lines: lines ? parseInt(lines, 10) : undefined,
       onData: (data) => {
         // Send data as SSE event

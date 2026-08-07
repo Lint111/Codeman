@@ -881,6 +881,26 @@ export const SessionWorkingDirectorySchema = z.object({
   workingDir: safePathSchema,
 });
 
+/** Host-editor action from the repository File Viewer. Paths remain repository-relative. */
+export const RepositoryEditorOpenSchema = z
+  .object({
+    scope: z.string().min(1).max(512).optional(),
+    agentId: z.string().min(1).max(256).optional(),
+    path: z
+      .string()
+      .min(1)
+      .max(4096)
+      .refine((value) => !value.includes('\0'), 'Invalid file path')
+      .optional(),
+    commit: z
+      .string()
+      .min(1)
+      .max(256)
+      .refine((value) => !value.includes('\0'), 'Invalid commit')
+      .optional(),
+  })
+  .strict();
+
 /** PUT /api/sessions/:id/color */
 export const SessionColorSchema = z.object({
   color: z.string().max(30),

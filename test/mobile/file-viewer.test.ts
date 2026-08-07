@@ -258,8 +258,16 @@ describe('Mobile File Viewer', () => {
     const state = await page.evaluate(async () => {
       const originalFetch = window.fetch;
       const requests: string[] = [];
-      window.fetch = async (input) => {
+      const editorRequests: Array<Record<string, unknown>> = [];
+      window.fetch = async (input, init) => {
         const url = String(input);
+        if (url.endsWith('/repository/open-editor')) {
+          editorRequests.push(JSON.parse(String(init?.body || '{}')));
+          return new Response(JSON.stringify({ success: true, data: { kind: 'workspace' } }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
         requests.push(url);
         const viewingAgent = url.includes('agentId=agent-feature');
         const root = viewingAgent ? '/worktrees/agent-feature' : '/repos/parent';
@@ -329,11 +337,14 @@ describe('Mobile File Viewer', () => {
       document.getElementById('fileBrowserPanel')?.classList.add('visible');
 
       await app.selectSubagent('agent-feature');
+      await app.openFileBrowserInEditor();
       const agentState = {
         agentId: app.fileBrowserAgentId,
         root: app.fileBrowserData?.root,
         rootLabel: document.getElementById('fileBrowserRoot')?.textContent,
         editHidden: (document.getElementById('fileBrowserWorkingDirectoryBtn') as HTMLElement)?.hidden,
+        openHidden: (document.getElementById('fileBrowserOpenEditorBtn') as HTMLElement)?.hidden,
+        editorRequests: [...editorRequests],
         requests: [...requests],
       };
 
@@ -354,6 +365,8 @@ describe('Mobile File Viewer', () => {
       agentId: 'agent-feature',
       root: '/worktrees/agent-feature',
       editHidden: true,
+      openHidden: false,
+      editorRequests: [{ scope: 'agent-current', agentId: 'agent-feature' }],
     });
     expect(state.agentState.rootLabel).toContain('Feature worker');
     expect(state.agentState.requests).toHaveLength(2);
@@ -737,10 +750,19 @@ describe('Mobile File Viewer', () => {
     await page.evaluate(() => {
       const testWindow = window as typeof window & {
         __fileViewerOriginalFetch?: typeof window.fetch;
+        __fileViewerEditorRequests?: Array<Record<string, unknown>>;
       };
       testWindow.__fileViewerOriginalFetch = window.fetch;
-      window.fetch = async (input) => {
+      testWindow.__fileViewerEditorRequests = [];
+      window.fetch = async (input, init) => {
         const url = String(input);
+        if (url.endsWith('/repository/open-editor')) {
+          testWindow.__fileViewerEditorRequests?.push(JSON.parse(String(init?.body || '{}')));
+          return new Response(JSON.stringify({ success: true, data: { kind: 'diff' } }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
         if (!url.includes('/repository/diff?')) {
           throw new Error(`Unexpected URL: ${url}`);
         }
@@ -817,6 +839,17 @@ describe('Mobile File Viewer', () => {
     await expect.poll(() => page.locator('.repository-diff').isVisible()).toBe(true);
     await expect.poll(() => page.locator('.repository-diff-line.diff-add').count()).toBe(2);
     await expect.poll(() => page.locator('.repository-diff-line.diff-del').count()).toBe(1);
+    await expect.poll(() => page.locator('#filePreviewOpenEditorBtn').isVisible()).toBe(true);
+    await page.locator('#filePreviewOpenEditorBtn').click();
+    await expect
+      .poll(() =>
+        page.evaluate(
+          () =>
+            (window as typeof window & { __fileViewerEditorRequests?: Array<Record<string, unknown>> })
+              .__fileViewerEditorRequests
+        )
+      )
+      .toEqual([{ scope: 'scope-diff', path: 'src/app.ts' }]);
 
     await page.locator('.file-preview-mode-btn[data-mode="full"]').click();
     await expect.poll(() => page.locator('.repository-diff-full').isVisible()).toBe(true);

@@ -676,6 +676,59 @@ describe('file-routes', () => {
     });
   });
 
+  // ========== GET /api/sessions/:id/tail-file ==========
+
+  describe('GET /api/sessions/:id/tail-file', () => {
+    it('authorizes only the current Claude conversation scratchpad as an extra read root', async () => {
+      const conversationId = '7148e9de-7673-48b8-bf38-6799e52c346a';
+      const uid = typeof process.getuid === 'function' ? process.getuid() : 1000;
+      harness.ctx._session.workingDir = '/home/liory/Github/undertow';
+      Object.defineProperty(harness.ctx._session, 'claudeSessionId', {
+        configurable: true,
+        value: conversationId,
+      });
+      const scratchpad = `/tmp/claude-${uid}/-home-liory-Github-undertow/${conversationId}/scratchpad`;
+      mockedFileStreamManager.createStream.mockResolvedValueOnce({
+        success: false,
+        error: 'test complete',
+      });
+
+      await harness.app.inject({
+        method: 'GET',
+        url: `/api/sessions/${harness.ctx._sessionId}/tail-file?path=${encodeURIComponent(`${scratchpad}/report.md`)}`,
+      });
+
+      expect(mockedFileStreamManager.createStream).toHaveBeenCalledWith(
+        expect.objectContaining({ allowedReadRoots: [scratchpad] })
+      );
+    });
+
+    it('does not authorize another Claude conversation scratchpad', async () => {
+      const currentConversation = '7148e9de-7673-48b8-bf38-6799e52c346a';
+      const otherConversation = '8248e9de-7673-48b8-bf38-6799e52c346b';
+      const uid = typeof process.getuid === 'function' ? process.getuid() : 1000;
+      harness.ctx._session.workingDir = '/home/liory/Github/undertow';
+      Object.defineProperty(harness.ctx._session, 'claudeSessionId', {
+        configurable: true,
+        value: currentConversation,
+      });
+      const filePath = `/tmp/claude-${uid}/-home-liory-Github-undertow/${otherConversation}/scratchpad/report.md`;
+      mockedFileStreamManager.createStream.mockResolvedValueOnce({
+        success: false,
+        error: 'test complete',
+      });
+
+      await harness.app.inject({
+        method: 'GET',
+        url: `/api/sessions/${harness.ctx._sessionId}/tail-file?path=${encodeURIComponent(filePath)}`,
+      });
+
+      expect(mockedFileStreamManager.createStream).toHaveBeenCalledWith(
+        expect.objectContaining({ allowedReadRoots: [] })
+      );
+    });
+  });
+
   // ========== DELETE /api/sessions/:id/tail-file/:streamId ==========
 
   describe('DELETE /api/sessions/:id/tail-file/:streamId', () => {

@@ -83,6 +83,37 @@ exposes a stable agent ID, parent-session association, and server-observed
 absolute workspace. Providers must not pass an arbitrary workspace from the
 browser.
 
+The docked subagent panel lists only workers owned by the active session.
+Selecting one immediately applies its server-resolved workspace to an open File
+Viewer; returning to the parent restores the parent workspace.
+
+## Host Editor
+
+The File Viewer header can open the selected workspace in VS Code on the
+Codeman host. A diff preview can open its bounded before/after snapshots in the
+same editor. Codeman invokes `CODEMAN_EDITOR_BINARY` (default `code`) with an
+argument array and no shell. Diff snapshots live in a temporary directory until
+the editor's `--wait` process exits, then are removed.
+
+Editor launch is available only for local sessions. In multi-user mode it is an
+admin action because it controls an application on the host machine. The same
+session, subagent, worktree, path, binary-file, and truncation checks used by
+the browser remain authoritative; the browser cannot supply an arbitrary host
+path.
+
+## Read Boundaries
+
+Ordinary file and tail routes remain confined to the selected session workspace
+and their documented log roots. Read-only access is still security-sensitive:
+an unrestricted browser could disclose credentials, another session's prompt,
+or host configuration.
+
+Claude scratchpad artifacts are the narrow exception for live file tails. A
+scratchpad under `/tmp/claude-<uid>` is admitted only when its encoded project
+and conversation match the selected session. Real-path validation is repeated
+when the stream opens, so traversal and symlink targets cannot escape that
+authorized scratchpad root. Other `/tmp` paths remain rejected.
+
 ## HTTP API
 
 All routes require access to the owning session through `findSessionOrFail`.
@@ -96,6 +127,7 @@ resolution runs.
 | `GET /api/sessions/:id/repository?scope=`                               | Worktrees, current changes, recent commits     |
 | `GET /api/sessions/:id/repository/commit?scope=&commit=`                | One commit and its changed paths               |
 | `GET /api/sessions/:id/repository/diff?scope=&path=&commit=`            | Lazy patch plus bounded before/after snapshots |
+| `POST /api/sessions/:id/repository/open-editor`                         | Open selected workspace or diff in host VS Code |
 | `GET /api/sessions/:id/files?...&scope=`                                | Directory tree rooted at a validated worktree  |
 | `GET /api/sessions/:id/file-{content,raw,preview,thumbnail}?...&scope=` | Existing preview routes in that same scope     |
 
@@ -139,7 +171,10 @@ safe-area-aware bottom sheet. Diff preview uses the full visual viewport.
   worktree, nested discovery, status/history/diffs, rename parsing, and scope
   traversal rejection.
 - `test/routes/file-routes-repository.test.ts`: session route ownership and
-  scoped-vs-legacy file access, including owned and foreign subagent contexts.
+  scoped-vs-legacy file access, owned and foreign subagent contexts, and
+  structured host-editor launch arguments.
+- `test/file-stream-manager.test.ts` and `test/routes/file-routes.test.ts`:
+  explicit read-root confinement and owned Claude scratchpad admission.
 - `test/mobile/file-viewer.test.ts`: stale tab-switch response rejection,
   parent/subagent context restoration, worktree selector defaults, Changes and
   History interactions, compact/full diff rendering, and phone viewport

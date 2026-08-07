@@ -5,7 +5,7 @@
  */
 
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -31,13 +31,42 @@ describe('file-routes repository browsing', () => {
   let harness: RouteTestHarness;
   let savedMultiUser: string | undefined;
   let savedUserSpaces: string | undefined;
+  let savedEditorBinary: string | undefined;
+  let savedEditorCapture: string | undefined;
+  let editorCapture: string;
 
   beforeEach(async () => {
     savedMultiUser = process.env.CODEMAN_MULTIUSER;
     savedUserSpaces = process.env.CODEMAN_USER_SPACES_DIR;
+    savedEditorBinary = process.env.CODEMAN_EDITOR_BINARY;
+    savedEditorCapture = process.env.CODEMAN_EDITOR_CAPTURE;
     delete process.env.CODEMAN_MULTIUSER;
     delete process.env.CODEMAN_USER_SPACES_DIR;
     fixtureRoot = mkdtempSync(join(tmpdir(), 'codeman-file-routes-git-'));
+    editorCapture = join(fixtureRoot, 'editor-args.txt');
+    const fakeEditor = join(fixtureRoot, 'fake-code.sh');
+    writeFileSync(
+      fakeEditor,
+      [
+        '#!/bin/sh',
+        'printf "%s\\n" "$@" > "$CODEMAN_EDITOR_CAPTURE"',
+        'has_diff=0',
+        'previous=""',
+        'last=""',
+        'for argument in "$@"; do',
+        '  [ "$argument" = "--diff" ] && has_diff=1',
+        '  previous="$last"',
+        '  last="$argument"',
+        'done',
+        'if [ "$has_diff" = "1" ]; then',
+        '  cp "$previous" "$CODEMAN_EDITOR_CAPTURE.before"',
+        '  cp "$last" "$CODEMAN_EDITOR_CAPTURE.after"',
+        'fi',
+      ].join('\n')
+    );
+    chmodSync(fakeEditor, 0o755);
+    process.env.CODEMAN_EDITOR_BINARY = fakeEditor;
+    process.env.CODEMAN_EDITOR_CAPTURE = editorCapture;
     repositoryRoot = join(fixtureRoot, 'repository');
     mkdirSync(repositoryRoot);
     mkdirSync(join(repositoryRoot, 'src'));
@@ -65,7 +94,19 @@ describe('file-routes repository browsing', () => {
     } else {
       process.env.CODEMAN_USER_SPACES_DIR = savedUserSpaces;
     }
+    if (savedEditorBinary === undefined) delete process.env.CODEMAN_EDITOR_BINARY;
+    else process.env.CODEMAN_EDITOR_BINARY = savedEditorBinary;
+    if (savedEditorCapture === undefined) delete process.env.CODEMAN_EDITOR_CAPTURE;
+    else process.env.CODEMAN_EDITOR_CAPTURE = savedEditorCapture;
   });
+
+  async function waitForPath(path: string): Promise<void> {
+    for (let attempt = 0; attempt < 50; attempt++) {
+      if (existsSync(path)) return;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    throw new Error(`Timed out waiting for ${path}`);
+  }
 
   it('returns repository metadata and roots the scoped file tree at the worktree', async () => {
     const repositoryResponse = await harness.app.inject({
@@ -127,6 +168,54 @@ describe('file-routes repository browsing', () => {
         additions: 1,
       },
     });
+  });
+
+  it('opens the selected worktree in VS Code without a shell command', async () => {
+    const response = await harness.app.inject({
+      method: 'POST',
+      url: `/api/sessions/${harness.ctx._sessionId}/repository/open-editor`,
+      payload: { scope: 'current' },
+    });
+
+    expect(response.json()).toMatchObject({ success: true, data: { kind: 'workspace' } });
+    await waitForPath(editorCapture);
+    expect(readFileSync(editorCapture, 'utf8').trim().split('\n')).toEqual(['--reuse-window', repositoryRoot]);
+  });
+
+  it('opens the current file change as native before and after VS Code snapshots', async () => {
+    const response = await harness.app.inject({
+      method: 'POST',
+      url: `/api/sessions/${harness.ctx._sessionId}/repository/open-editor`,
+      payload: { scope: 'current', path: 'README.md' },
+    });
+
+    expect(response.json()).toMatchObject({ success: true, data: { kind: 'diff' } });
+    await waitForPath(`${editorCapture}.after`);
+    expect(readFileSync(editorCapture, 'utf8')).toContain('--diff\n');
+    expect(readFileSync(`${editorCapture}.before`, 'utf8')).toBe('initial\n');
+    expect(readFileSync(`${editorCapture}.after`, 'utf8')).toBe('initial\nchanged\n');
+  });
+
+  it('rejects host-editor launch for a remote session', async () => {
+    Object.defineProperty(harness.ctx._session, 'remote', {
+      configurable: true,
+      value: { host: 'example.invalid' },
+    });
+
+    const response = await harness.app.inject({
+      method: 'POST',
+      url: `/api/sessions/${harness.ctx._sessionId}/repository/open-editor`,
+      payload: { scope: 'current' },
+    });
+
+    // The focused route harness does not install production's status-mapping
+    // preSerialization hook; the structured error body is the contract here.
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      success: false,
+      error: 'Host editor launch is available only for local sessions',
+    });
+    expect(existsSync(editorCapture)).toBe(false);
   });
 
   it('rejects a forged worktree scope', async () => {
