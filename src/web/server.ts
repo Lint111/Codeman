@@ -40,7 +40,7 @@ import { existsSync, mkdirSync, readFileSync, chmodSync, rmSync, statSync } from
 import fs from 'node:fs/promises';
 import { execSync } from 'node:child_process';
 import { hostname as getHostname } from 'node:os';
-import { dataPath, getDataDir, CODEMAN_INSTANCE } from '../config/instance.js';
+import { dataPath, getDataDir, CODEMAN_INSTANCE, CODEMAN_VIEWER_MODE } from '../config/instance.js';
 import { getHookSecret } from '../config/hook-secret.js';
 import { EventEmitter } from 'node:events';
 import { Session, isExternalCliMode, type BackgroundTask, type TerminalCursor } from '../session.js';
@@ -187,6 +187,7 @@ import {
   SCHEDULED_CLEANUP_INTERVAL,
   SCHEDULED_RUN_MAX_AGE,
   SSE_HEARTBEAT_INTERVAL,
+  VIEWER_SIZE_SWEEP_INTERVAL,
   SESSION_LIMIT_WAIT_MS,
   ITERATION_PAUSE_MS,
   STATS_COLLECTION_INTERVAL_MS,
@@ -298,6 +299,7 @@ export class WebServer extends EventEmitter {
   private readonly titleHostname: string;
   private windowTitle: string;
   private readonly indexHtmlTemplate: string;
+  private readonly subagentViewerHtmlTemplate: string;
   private readonly allowUnauthenticatedNetwork: boolean;
   private _pasteImageGcStop: (() => void) | null = null;
   private _eventLoopMonitor: EventLoopMonitorHandle | null = null;
@@ -329,6 +331,7 @@ export class WebServer extends EventEmitter {
     this.titleHostname = titleHostname || getHostname();
     this.windowTitle = `codeman:${this.titleHostname}`;
     this.indexHtmlTemplate = readFileSync(join(__dirname, 'public', 'index.html'), 'utf-8');
+    this.subagentViewerHtmlTemplate = readFileSync(join(__dirname, 'public', 'subagent-viewer.html'), 'utf-8');
 
     const rewriteUrl = (req: { url?: string }): string => rewriteApiV1Url(req.url || '');
     if (https) {
@@ -807,6 +810,12 @@ export class WebServer extends EventEmitter {
         .header('Cache-Control', 'no-cache')
         .type('text/html; charset=utf-8')
         .send(await this.renderIndexHtml(id));
+    });
+    this.app.get('/subagent/:id', async (_req, reply) => {
+      return reply
+        .header('Cache-Control', 'no-cache')
+        .type('text/html; charset=utf-8')
+        .send(this.cacheBustAssets(this.subagentViewerHtmlTemplate));
     });
     // Service worker must never be cached — browsers check for SW updates on navigation
     this.app.get('/sw.js', async (_req, reply) => {
@@ -2345,6 +2354,29 @@ export class WebServer extends EventEmitter {
       { description: 'SSE heartbeat + dead client cleanup' }
     );
 
+    // VIEWER MODE — re-assert `window-size latest` on panes a peer Codeman has
+    // pinned back to `manual`. tmux flips that option implicitly on any
+    // explicit `resize-window`, so one non-viewer instance sharing this socket
+    // would otherwise revoke viewer sizing for every client on the pane. No-op
+    // once every instance on the socket runs viewer mode.
+    if (CODEMAN_VIEWER_MODE) {
+      this.cleanup.setInterval(
+        () => {
+          try {
+            const names = this.mux.getSessions().map((s) => s.muxName);
+            const repaired = this.mux.restoreLatestWindowSize?.(names) ?? [];
+            if (repaired.length > 0) {
+              console.log(`[Viewer] Restored window-size latest on ${repaired.length} pane(s): ${repaired.join(', ')}`);
+            }
+          } catch (err) {
+            console.error('[Viewer] window-size sweep failed:', getErrorMessage(err));
+          }
+        },
+        VIEWER_SIZE_SWEEP_INTERVAL,
+        { description: 'viewer window-size self-heal' }
+      );
+    }
+
     // Start token recording timer (every 5 minutes for long-running sessions)
     this.cleanup.setInterval(
       () => {
@@ -2357,7 +2389,7 @@ export class WebServer extends EventEmitter {
     // Start subagent watcher for Claude Code background agent visibility (if enabled)
     if (await this.isSubagentTrackingEnabled()) {
       subagentWatcher.start();
-      console.log('Subagent watcher started - monitoring ~/.claude/projects for background agent activity');
+      console.log('Subagent watcher started - monitoring native and configured dispatch sources');
     } else {
       console.log('Subagent watcher disabled by user settings');
     }

@@ -3438,6 +3438,64 @@ export class TmuxManager extends EventEmitter implements TerminalMultiplexer {
     }
   }
 
+  /**
+   * Viewer-mode counterpart to {@link setManualWindowSize}: size the window to
+   * the most-recently-active client rather than pinning it to whatever this
+   * server last set. Scoped per-session (`-t <name>`), matching the remote
+   * shared-session hardening, so other sessions on the socket are untouched.
+   */
+  setLatestWindowSize(muxName: string): boolean {
+    if (!isValidMuxName(muxName)) {
+      console.error('[TmuxManager] Invalid session name in setLatestWindowSize:', muxName);
+      return false;
+    }
+
+    try {
+      execSync(`${this.tmux()} set-window-option -t ${shellescape(muxName)} window-size latest`, {
+        timeout: EXEC_TIMEOUT_MS,
+        stdio: 'ignore',
+      });
+      return true;
+    } catch (err) {
+      console.error('[TmuxManager] Failed to set latest window size:', err);
+      return false;
+    }
+  }
+
+  /**
+   * Viewer-mode self-heal: re-assert `window-size latest` on any tracked pane a
+   * peer has flipped back to `manual`.
+   *
+   * ⚠️ tmux sets `window-size manual` IMPLICITLY on any explicit
+   * `resize-window`. So a single non-viewer Codeman on the shared socket
+   * silently revokes viewer mode for EVERY client on that pane the first time
+   * it sizes one — measured 2026-08-07: set `latest`, issue one
+   * `resize-window`, the option reads `manual`. Until every instance on a
+   * socket runs viewer mode, this sweep is what keeps the setting durable.
+   *
+   * Only touches panes already reverted, so it is a no-op in the steady state
+   * and never fights a peer that is mid-resize.
+   *
+   * @returns mux names that were corrected.
+   */
+  restoreLatestWindowSize(muxNames: string[]): string[] {
+    const repaired: string[] = [];
+    for (const muxName of muxNames) {
+      if (!isValidMuxName(muxName)) continue;
+      try {
+        const current = execSync(`${this.tmux()} show-window-options -t ${shellescape(muxName)} window-size`, {
+          timeout: EXEC_TIMEOUT_MS,
+          encoding: 'utf-8',
+        }).trim();
+        if (!current.includes('manual')) continue;
+        if (this.setLatestWindowSize(muxName)) repaired.push(muxName);
+      } catch {
+        /* pane vanished mid-sweep — reconcileSessions will drop it */
+      }
+    }
+    return repaired;
+  }
+
   resizeWindow(muxName: string, cols: number, rows: number): boolean {
     if (!isValidMuxName(muxName)) {
       console.error('[TmuxManager] Invalid session name in resizeWindow:', muxName);

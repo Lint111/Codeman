@@ -76,6 +76,7 @@ import {
 } from './config/buffer-limits.js';
 import { DEFAULT_TMUX_HISTORY_LIMIT } from './config/terminal-history.js';
 import { EXEC_TIMEOUT_MS } from './config/exec-timeout.js';
+import { CODEMAN_VIEWER_MODE } from './config/instance.js';
 import {
   buildInteractiveArgs,
   buildPromptArgs,
@@ -1301,9 +1302,19 @@ export class Session extends EventEmitter {
     // Integration tests need a live input/output transport without attaching to
     // the host's tmux server or agent CLI. Production still uses the real mux.
     if (!IS_TEST_MODE) {
-      // Prevent tmux from letting the newest browser attach dictate global window
-      // size; accepted Codeman resize events update it explicitly below.
-      mux.setManualWindowSize?.(this._muxSession!.muxName);
+      if (CODEMAN_VIEWER_MODE) {
+        // VIEWER MODE — this instance shares the socket with other Codemans and
+        // must not seize pane geometry. `manual` would make THIS server's
+        // resize-window authoritative over every other attached client,
+        // including a second instance's viewers; our arbitration is per-process
+        // and cannot see theirs. `latest` hands arbitration to tmux, which does
+        // see all clients. See CODEMAN_VIEWER_MODE in config/instance.ts.
+        mux.setLatestWindowSize?.(this._muxSession!.muxName);
+      } else {
+        // Prevent tmux from letting the newest browser attach dictate global window
+        // size; accepted Codeman resize events update it explicitly below.
+        mux.setManualWindowSize?.(this._muxSession!.muxName);
+      }
     }
     // Query existing tmux window size so re-attach matches (avoids flicker from 120x40 default).
     // MUST go through the dedicated socket (mux.muxSocket); a bare `tmux display` hits the
@@ -2732,7 +2743,13 @@ export class Session extends EventEmitter {
     if (this.ptyProcess && (dimsChanged || options.force || restoresMobileOverride)) {
       this._ptyCols = cols;
       this._ptyRows = rows;
-      if (!IS_TEST_MODE && this._mux && this._muxSession) {
+      // VIEWER MODE — do NOT push an authoritative `resize-window`. Under
+      // `window-size latest` our own attach-bridge PTY resize below already
+      // makes this client the most-recently-active one, so tmux sizes the
+      // window for us. Calling resize-window here would re-assert this
+      // instance's size over every other instance's clients on the shared
+      // socket, which is the cross-process fight viewer mode exists to avoid.
+      if (!IS_TEST_MODE && !CODEMAN_VIEWER_MODE && this._mux && this._muxSession) {
         this._mux.resizeWindow?.(this._muxSession.muxName, cols, rows);
       }
       this.ptyProcess.resize(cols, rows);

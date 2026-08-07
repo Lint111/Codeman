@@ -40,6 +40,32 @@ const INSTANCE_SUFFIX = CODEMAN_INSTANCE ? `-${CODEMAN_INSTANCE}` : '';
 /** Default tmux socket for this instance. `CODEMAN_TMUX_SOCKET` still overrides. */
 export const DEFAULT_TMUX_SOCKET = `codeman${INSTANCE_SUFFIX}`;
 
+/**
+ * VIEWER MODE (`CODEMAN_VIEWER=1`) — treat the tmux socket as a SHARED
+ * development environment this instance observes rather than owns.
+ *
+ * Codeman normally pins each pane to `window-size manual` (see
+ * `setManualWindowSize`, called once from `session.ts`) so its own arbitrated
+ * size — the `_desktopSizeClaims` logic in `Session.resize()` — beats raw tmux
+ * attach order. That arbitration lives in PER-PROCESS memory, so it works
+ * within one instance and is invisible to any other instance on the same
+ * socket. Two servers on one pane would then alternate authoritative
+ * `resize-window` calls and reflow each other's viewers.
+ *
+ * In viewer mode we skip the `manual` pin and let tmux's own `window-size
+ * latest` arbitrate across every attached client, whichever instance owns it.
+ * Measured on a scratch pane (200x50 + 80x24 clients): `smallest` clamps to the
+ * smaller, `manual` ignores clients entirely, `latest` lets both coexist at
+ * their own client size with the window following the most-recently-ACTIVE one.
+ * That is the cross-process behavior `manual` cannot provide — and it is the
+ * same choice COD-106 already made for shared remote tmux servers.
+ *
+ * Off by default: single-instance installs keep the richer in-process
+ * arbitration (90s idle claims + explicit takeControl), which tmux has no
+ * equivalent for.
+ */
+export const CODEMAN_VIEWER_MODE = process.env.CODEMAN_VIEWER === '1';
+
 let _ensured = false;
 
 /**
