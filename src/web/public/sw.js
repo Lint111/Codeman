@@ -27,6 +27,7 @@ const APP_SHELL = [
   '/mobile.css',
   '/constants.js',
   '/app.js',
+  '/subagent-transcript-view.js',
   '/api-client.js',
   '/terminal-ui.js',
   '/session-ui.js',

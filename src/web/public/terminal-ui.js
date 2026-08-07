@@ -225,6 +225,23 @@ Object.assign(CodemanApp.prototype, {
         return false;
       }
 
+      // On touch keyboards, plain Enter is an editable line break while the
+      // dedicated toolbar Enter is the explicit submit action. Claim keydown
+      // here so xterm cannot race a \r submission ahead of beforeinput.
+      if (
+        ev.key === 'Enter' &&
+        ev.type === 'keydown' &&
+        !ev.shiftKey &&
+        !ev.ctrlKey &&
+        !ev.altKey &&
+        !ev.metaKey &&
+        MobileDetection.isTouchDevice() &&
+        this._terminalInputController.handleMobileEnterKeydown(ev)
+      ) {
+        ev.preventDefault();
+        return false;
+      }
+
       return true;
     });
 
@@ -589,6 +606,7 @@ Object.assign(CodemanApp.prototype, {
     // Handle resize with throttling for performance
     this._resizeTimeout = null;
     this._lastResizeDims = null;
+    this._lastResizeDimsBySession = new Map();
 
     const throttledResize = () => {
       // Trailing-edge debounce: ALL resize work (fit + clear + SIGWINCH) happens
@@ -2669,11 +2687,9 @@ Object.assign(CodemanApp.prototype, {
     if (localEcho) frame.appendChild(localEcho.cloneNode(true));
     cover.appendChild(frame);
 
-    const hasContent = Boolean(rows.textContent?.trim() || localEcho?.textContent?.trim());
     const previous = this._terminalHistoryReplayCover;
     terminalElement.appendChild(cover);
     this._terminalHistoryReplayCover = cover;
-    this._terminalHistoryReplayCoverHasContent = hasContent;
     this._terminalHistoryReplayCoverVersion += 1;
     previous?.remove();
     return true;
@@ -2744,35 +2760,9 @@ Object.assign(CodemanApp.prototype, {
     return true;
   },
 
-  _replaceTerminalHistoryReplayCover(owner, { onlyIfEmpty = false } = {}) {
+  _replaceTerminalHistoryReplayCover(owner) {
     if (this._terminalHistoryReplayCoverOwner !== owner) return false;
-    if (onlyIfEmpty && this._terminalHistoryReplayCoverHasContent) {
-      this._alignTerminalHistoryReplayCover();
-      return false;
-    }
     return this._captureTerminalHistoryReplayCover();
-  },
-
-  _alignTerminalHistoryReplayCover() {
-    if (typeof HTMLElement === 'undefined') return false;
-    const cover = this._terminalHistoryReplayCover;
-    const terminalElement = this.terminal?.element;
-    const screen = terminalElement?.querySelector?.('.xterm-screen');
-    if (
-      !(cover instanceof HTMLElement) ||
-      !(terminalElement instanceof HTMLElement) ||
-      !(screen instanceof HTMLElement)
-    ) {
-      return false;
-    }
-    const terminalRect = terminalElement.getBoundingClientRect();
-    const screenRect = screen.getBoundingClientRect();
-    if (screenRect.width < 1 || screenRect.height < 1) return false;
-    cover.style.left = `${screenRect.left - terminalRect.left}px`;
-    cover.style.top = `${screenRect.top - terminalRect.top}px`;
-    cover.style.width = `${screenRect.width}px`;
-    cover.style.height = `${screenRect.height}px`;
-    return true;
   },
 
   _waitForTerminalPaint() {
@@ -2885,7 +2875,6 @@ Object.assign(CodemanApp.prototype, {
     this._terminalHistoryReplayCover?.remove();
     this._terminalHistoryReplayCover = null;
     this._terminalHistoryReplayCoverOwner = null;
-    this._terminalHistoryReplayCoverHasContent = false;
     this._terminalHistoryReplayCoverComplete = false;
     this._terminalHistoryReplayCoverCompleteAt = 0;
     this._terminalHistoryReplayCoverCheckScheduled = false;
@@ -3604,6 +3593,11 @@ Object.assign(CodemanApp.prototype, {
    * row remains the deliberate keyboard target.
    */
   _classifyMobileTerminalTap(clientX, clientY) {
+    // Pending input is a DOM overlay, not terminal-buffer content. A wrapped
+    // draft can occupy many rows above or below xterm's unchanged cursor, so
+    // let the renderer's actual row geometry define its complete focus area.
+    if (this._localEchoOverlay?.containsClientPoint?.(clientX, clientY)) return 'input';
+
     if (!this._terminalViewportAtBottom()) return 'history';
 
     const pos = this._clientPointToCell(clientX, clientY);
@@ -4084,7 +4078,7 @@ Object.assign(CodemanApp.prototype, {
    * Send resize to a session with minimum dimension enforcement.
    * @param {string} sessionId
    * @param {{ forceHttp?: boolean, force?: boolean, takeControl?: boolean, refit?: boolean }} [options]
-   * @returns {Promise<boolean>} Whether dimensions changed from the last send
+   * @returns {Promise<boolean>} Whether this session should redraw after the resize
    */
   async sendResize(sessionId, options = {}) {
     // Fit terminal to container before reading dimensions — ensures local
@@ -4100,16 +4094,18 @@ Object.assign(CodemanApp.prototype, {
           }
         : this.getTerminalDimensions();
     if (!dims) return false;
-    // Did the dimensions actually change since the last resize we sent? Callers
-    // use this to skip work (e.g. the post-resize TUI-redraw settle) when no
-    // real SIGWINCH was triggered — switching tabs at the same browser size is
-    // a no-op on the server and needs no redraw grace.
-    const prev = this._lastResizeDims;
-    const changed = !prev || prev.cols !== dims.cols || prev.rows !== dims.rows;
+    // Each session owns an independent tmux pane size. Comparing only with the
+    // last browser-wide dimensions makes the first resize of a cold session
+    // appear unchanged when the previous tab happened to use the same viewport.
+    // That skips the TUI redraw grace and captures Codex midway through reflow.
+    const prev = this._lastResizeDimsBySession?.get(sessionId);
+    const changed =
+      options.force === true || !prev || prev.cols !== dims.cols || prev.rows !== dims.rows;
     // Update _lastResizeDims so the throttledResize handler won't redundantly
     // clear the terminal for the same dimensions (which would blank the screen
     // without a subsequent Ink redraw to repaint it).
     this._lastResizeDims = { cols: dims.cols, rows: dims.rows };
+    this._lastResizeDimsBySession?.set(sessionId, { cols: dims.cols, rows: dims.rows });
     const viewportType =
       typeof MobileDetection !== 'undefined' && MobileDetection.getDeviceType
         ? MobileDetection.getDeviceType()

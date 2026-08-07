@@ -399,6 +399,7 @@
       <div class="file-browser-header">
         <span class="file-browser-title">Repository</span>
         <div class="file-browser-actions">
+          <button type="button" class="btn-icon-sm" id="fileBrowserOpenEditorBtn" onclick="app.openFileBrowserInEditor()" title="Open current workspace in VS Code" aria-label="Open current workspace in VS Code" hidden>&#x2197;</button>
           <button type="button" class="btn-icon-sm" id="fileBrowserWorkingDirectoryBtn" onclick="app.openFileBrowserWorkingDirectoryEditor()" title="Set session work path" aria-label="Set session work path">&#x270E;</button>
           <button type="button" class="btn-icon-sm" onclick="app.refreshFileBrowser()" title="Refresh" aria-label="Refresh repository">&#x21BB;</button>
           <button type="button" class="btn-icon-sm" onclick="app.toggleFileBrowserExpand()" title="Expand/Collapse All" aria-label="Expand or collapse all directories" id="fileBrowserExpandBtn">&#x229E;</button>
@@ -453,6 +454,7 @@
               <button type="button" class="file-preview-mode-btn active" data-mode="compact" onclick="app.setRepositoryDiffMode('compact')" aria-pressed="true">Compact</button>
               <button type="button" class="file-preview-mode-btn" data-mode="full" onclick="app.setRepositoryDiffMode('full')" aria-pressed="false">Full</button>
             </div>
+            <button type="button" class="btn-icon-sm" id="filePreviewOpenEditorBtn" onclick="app.openRepositoryDiffInEditor()" title="Open diff in VS Code" aria-label="Open diff in VS Code" hidden>&#x2197;</button>
             <button type="button" class="btn-icon-sm" onclick="app.copyFilePreviewContent()" title="Copy content" aria-label="Copy content">&#x2398;</button>
             <button type="button" class="btn-icon-sm" onclick="app.closeFilePreview()" title="Close" aria-label="Close preview">&times;</button>
           </div>
@@ -935,7 +937,7 @@
           Ultracode Agents <span id="ultracodeCountBadge" class="subagent-badge"></span>
         </div>
         <div class="subagents-panel-actions">
-          <button class="btn-icon-sm" onclick="app.toggleUltracodeAgentsPanel()" title="Toggle panel">&#x25B2;</button>
+          <button class="btn-icon-sm" onclick="app.toggleUltracodeAgentsPanel()" title="Toggle panel" id="ultracodeToggleBtn">&#x25B2;</button>
           <button class="btn-icon-sm" onclick="app.closeUltracodeAgentsPanel()" title="Close">&times;</button>
         </div>
       </div>
@@ -2702,6 +2704,7 @@
   <!-- Hardened markdown HTML sanitizer (wires DOMPurify). Must precede app.js. -->
   <script defer src="sanitize-html.js"></script>
   <script defer src="app.js"></script>
+  <script defer src="subagent-transcript-view.js"></script>
   <script defer src="terminal-ui.js"></script>
   <script defer src="respawn-ui.js"></script>
   <script defer src="ralph-panel.js"></script>

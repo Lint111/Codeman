@@ -29,6 +29,7 @@ type TerminalInputController = {
   updateComposition: (text: string) => void;
   endComposition: (text: string) => void;
   handleTerminalData: (data: string, source?: string) => boolean;
+  handleMobileEnterKeydown: (event?: { isComposing?: boolean; keyCode?: number }) => boolean;
   sendControl: (data: string) => void;
   sendExternalText: (text: string) => void;
   sendCommand: (command: string) => void;
@@ -283,6 +284,46 @@ describe('TerminalInputController', () => {
 
     expect(overlay.pendingText).toBe('');
     expect(deliveries).toEqual(['cd home', '\r']);
+  });
+
+  it('keeps touch Enter as one draft line break when keydown precedes beforeinput', () => {
+    const { controller, textarea, overlay, deliveries } = createHarness();
+    const container = new FakeEventTarget();
+    controller.attachTextarea(container, { mobile: true });
+    overlay.appendText('first');
+
+    const handled = controller.handleMobileEnterKeydown({
+      isComposing: false,
+      keyCode: 13,
+    });
+    const beforeInput = textarea.fire('beforeinput', {
+      inputType: 'insertLineBreak',
+      isComposing: false,
+    });
+
+    expect(handled).toBe(true);
+    expect(beforeInput.preventDefault).toHaveBeenCalledOnce();
+    expect(overlay.pendingText).toBe('first\n');
+    expect(deliveries).toEqual([]);
+  });
+
+  it('submits immediate-echo touch Enter once when beforeinput follows keydown', () => {
+    const { controller, textarea, deliveries } = createHarness(false);
+    const container = new FakeEventTarget();
+    controller.attachTextarea(container, { mobile: true });
+
+    const handled = controller.handleMobileEnterKeydown({
+      isComposing: false,
+      keyCode: 13,
+    });
+    const beforeInput = textarea.fire('beforeinput', {
+      inputType: 'insertLineBreak',
+      isComposing: false,
+    });
+
+    expect(handled).toBe(true);
+    expect(beforeInput.preventDefault).toHaveBeenCalledOnce();
+    expect(deliveries).toEqual(['\r']);
   });
 
   it('retains a composition marker across a boundary and drops its delayed replay', () => {

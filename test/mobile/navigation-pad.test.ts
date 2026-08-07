@@ -618,4 +618,92 @@ describe('Mobile Navigation Pad', () => {
     expect(Math.abs(state.accessoryBottom - state.appBottom)).toBeLessThanOrEqual(1);
     expect(await page.locator(SELECTORS.MOBILE_NAVIGATION).isVisible()).toBe(false);
   });
+
+  it('moves docked panel toggles into the keyboard band without covering terminal input', async () => {
+    await page.evaluate(() => {
+      const settings = app.loadAppSettingsFromStorage();
+      settings.showMonitor = true;
+      settings.showSubagents = true;
+      settings.showUltracodeAgents = true;
+      app.saveAppSettingsToStorage(settings);
+
+      const monitor = document.getElementById('monitorPanel');
+      const subagents = document.getElementById('subagentsPanel');
+      const ultracode = document.getElementById('ultracodeAgentsPanel');
+      monitor!.style.display = '';
+      monitor!.classList.remove('open', 'detached');
+      subagents!.classList.remove('hidden', 'open', 'detached');
+      ultracode!.classList.remove('hidden', 'open', 'detached');
+      app.subagentPanelVisible = false;
+
+      KeyboardHandler.keyboardVisible = true;
+      KeyboardHandler._terminalInputRequested = true;
+      document.body.classList.add('keyboard-visible');
+      KeyboardHandler.onKeyboardShow();
+      MobileTerminalControls.syncVisibility();
+    });
+
+    const accessory = page.locator(SELECTORS.KEYBOARD_ACCESSORY);
+    expect(await accessory.isVisible()).toBe(true);
+    for (const action of ['panel-monitor', 'panel-subagents', 'panel-ultracode']) {
+      expect(await accessory.locator(`[data-action="${action}"]`).isVisible()).toBe(true);
+    }
+
+    const collapsedState = await page.evaluate(() =>
+      ['monitorPanel', 'subagentsPanel', 'ultracodeAgentsPanel'].map((id) => {
+        const panel = document.getElementById(id)!;
+        const rect = panel.getBoundingClientRect();
+        return {
+          display: getComputedStyle(panel).display,
+          width: rect.width,
+          height: rect.height,
+        };
+      })
+    );
+    expect(collapsedState).toEqual([
+      { display: 'none', width: 0, height: 0 },
+      { display: 'none', width: 0, height: 0 },
+      { display: 'none', width: 0, height: 0 },
+    ]);
+
+    const subagentToggle = accessory.locator('[data-action="panel-subagents"]');
+    await subagentToggle.click();
+    await page.waitForFunction(() => document.getElementById('subagentsPanel')?.classList.contains('open'));
+    await page.waitForTimeout(KEYBOARD.ANIMATION_DELAY);
+
+    const openState = await page.evaluate(() => {
+      const panel = document.getElementById('subagentsPanel')!;
+      const internalToggle = document.getElementById('subagentsToggleBtn')!;
+      const main = document.querySelector('.main')!;
+      const terminal = document.getElementById('terminalContainer')!;
+      const accessoryBar = document.querySelector('.keyboard-accessory-bar')!;
+      const panelBox = panel.getBoundingClientRect();
+      const mainBox = main.getBoundingClientRect();
+      const terminalBox = terminal.getBoundingClientRect();
+      const accessoryBox = accessoryBar.getBoundingClientRect();
+      return {
+        panelPosition: getComputedStyle(panel).position,
+        panelBottom: panelBox.bottom,
+        mainTop: mainBox.top,
+        mainHeight: mainBox.height,
+        terminalBottom: terminalBox.bottom,
+        accessoryTop: accessoryBox.top,
+        internalToggleDisplay: getComputedStyle(internalToggle).display,
+        terminalFocused: document.activeElement?.classList.contains('xterm-helper-textarea') || false,
+      };
+    });
+    expect(openState.panelPosition).toBe('relative');
+    expect(openState.panelBottom).toBeLessThanOrEqual(openState.mainTop + 1);
+    expect(openState.mainHeight).toBeGreaterThan(80);
+    expect(openState.terminalBottom).toBeLessThanOrEqual(openState.accessoryTop + 1);
+    expect(openState.internalToggleDisplay).toBe('none');
+    expect(openState.terminalFocused).toBe(true);
+    expect(await subagentToggle.getAttribute('aria-expanded')).toBe('true');
+
+    await subagentToggle.click();
+    await page.waitForFunction(() => !document.getElementById('subagentsPanel')?.classList.contains('open'));
+    expect(await page.locator('#subagentsPanel').isVisible()).toBe(false);
+    expect(await accessory.isVisible()).toBe(true);
+    expect(await subagentToggle.getAttribute('aria-expanded')).toBe('false');
+  });
 });

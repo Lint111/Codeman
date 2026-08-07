@@ -3,7 +3,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import type { Page, BrowserContext } from 'playwright';
 import { PORTS, SELECTORS, SWIPE, BODY_CLASSES, WAIT } from './helpers/constants.js';
 import { createTestServer, stopTestServer } from './helpers/server.js';
-import { createDevicePage, closeAllBrowsers } from './helpers/browser.js';
+import { createDevicePage, closeAllBrowsers, getBrowser } from './helpers/browser.js';
 import { swipe, swipeViaCDP, swipeViaSynthetic } from './helpers/touch-sim.js';
 import { assertHidden, assertVisible, getCSSProperty, getCSSNumericValue } from './helpers/assertions.js';
 import { REPRESENTATIVE_DEVICES } from './devices.js';
@@ -179,6 +179,70 @@ describe('Tab Navigation', () => {
         } finally {
           await deviceContext.close();
         }
+      }
+    });
+  });
+
+  // ─── Desktop Tab Layout Stability ───────────────────────────────────────
+
+  describe('Desktop Tab Layout Stability', () => {
+    it('does not resize or reflow wrapped tabs when hover actions appear', async () => {
+      const browser = await getBrowser('chromium');
+      const context = await browser.newContext({ viewport: { width: 900, height: 700 } });
+      const page = await context.newPage();
+
+      try {
+        await page.goto(BASE_URL, { waitUntil: 'domcontentloaded' });
+        await page.waitForTimeout(WAIT.PAGE_SETTLE);
+        await page.evaluate(() => {
+          const container = document.querySelector('.session-tabs') as HTMLElement | null;
+          if (!container) return;
+
+          container.className = 'session-tabs tabs-auto-wrap';
+          container.style.flex = 'none';
+          container.style.width = '430px';
+          container.innerHTML = Array.from(
+            { length: 5 },
+            (_, i) => `<div class="session-tab" data-id="layout-${i}">
+              <span class="tab-number">${i + 1}</span>
+              <span class="tab-status idle"></span>
+              <span class="tab-info"><span class="tab-name-row"><span class="tab-name">Session ${i + 1}</span></span></span>
+              <span class="tab-gear">&#x2699;</span>
+              <span class="tab-detach">&#x29C9;</span>
+              <span class="tab-close">&times;</span>
+            </div>`
+          ).join('');
+        });
+
+        const tabs = page.locator('.session-tab[data-id]');
+        const readRects = () =>
+          tabs.evaluateAll((elements) =>
+            elements.map((element) => {
+              const rect = element.getBoundingClientRect();
+              return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+            })
+          );
+
+        const before = await readRects();
+        const actionWidthBefore = await tabs
+          .nth(1)
+          .locator('.tab-close')
+          .evaluate((element) => element.getBoundingClientRect().width);
+
+        await tabs.nth(1).hover();
+        await page.waitForTimeout(250);
+
+        const after = await readRects();
+        const actionWidthAfter = await tabs
+          .nth(1)
+          .locator('.tab-close')
+          .evaluate((element) => element.getBoundingClientRect().width);
+
+        expect(actionWidthBefore).toBeGreaterThan(0);
+        expect(actionWidthAfter).toBe(actionWidthBefore);
+        expect(after).toEqual(before);
+      } finally {
+        await context.close();
       }
     });
   });

@@ -158,6 +158,107 @@ describe('Session initialization and viewport resize', () => {
     }, sessionId);
   });
 
+  it('waits for an uncached Codex pane to redraw when its viewport matches the previous session', async () => {
+    ({ context, page } = await freshPage());
+    await navigateAndWait(page);
+
+    const result = await page.evaluate(async () => {
+      const app = (window as unknown as { app: any }).app;
+      const sessionId = 'cold-codex-redraw-test';
+      const originalFetch = window.fetch;
+      const originalConnectWs = app._connectWs;
+      const settledFrame = 'ALIGNED_DIFF_MARKERS\r\n+ added line\r\n- removed line';
+      const staleFrame = 'BROKEN_DIFF_MARKERS +++++ -----';
+      let resizedAt = 0;
+      let firstSnapshotDelay = -1;
+
+      try {
+        app.sessions.set(sessionId, {
+          id: sessionId,
+          name: 'Cold Codex redraw',
+          mode: 'codex',
+          status: 'idle',
+          pid: 1,
+          workingDir: '/tmp',
+        });
+        app.sessionOrder = [sessionId];
+        app.activeSessionId = null;
+        app.terminalBufferCache.delete(sessionId);
+        app._xtermSnapshots.delete(sessionId);
+        app._warmTerminalCache.remove(sessionId);
+        app._terminalHistoryPaging.delete(sessionId);
+        localStorage.removeItem(`codeman-xs-${sessionId}`);
+        app.renderSessionTabs();
+
+        const dimensions = app.getTerminalDimensions();
+        app._lastResizeDims = { ...dimensions };
+        app._lastResizeDimsBySession?.delete(sessionId);
+        app._wsReady = false;
+        app._connectWs = () => {};
+
+        window.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+          const url = String(input);
+          if (url.includes(`/api/sessions/${sessionId}/resize`)) {
+            resizedAt = performance.now();
+            return new Response('{}', {
+              status: 200,
+              headers: { 'Content-Type': 'application/json' },
+            });
+          }
+          if (url.includes(`/api/sessions/${sessionId}/terminal`)) {
+            const delay = resizedAt > 0 ? performance.now() - resizedAt : 0;
+            if (firstSnapshotDelay < 0) firstSnapshotDelay = delay;
+            const terminalBuffer = delay >= 350 ? settledFrame : staleFrame;
+            return new Response(
+              JSON.stringify({
+                data: {
+                  terminalBuffer,
+                  truncated: false,
+                  status: 'idle',
+                },
+              }),
+              {
+                status: 200,
+                headers: { 'Content-Type': 'application/json' },
+              }
+            );
+          }
+          if (url === '/api/events/subscribe') {
+            return new Response('{}', {
+              status: 200,
+              headers: { 'Content-Type': 'application/json' },
+            });
+          }
+          return originalFetch.call(window, input, init);
+        }) as typeof window.fetch;
+
+        await app.selectSession(sessionId);
+        await new Promise<void>((resolve) => app.terminal.write('', resolve));
+
+        const buffer = app.terminal.buffer.active;
+        const text = Array.from(
+          { length: buffer.length },
+          (_, row) => buffer.getLine(row)?.translateToString(true) || ''
+        ).join('\n');
+        return { firstSnapshotDelay, text };
+      } finally {
+        window.fetch = originalFetch;
+        app._connectWs = originalConnectWs;
+        app.sessions.delete(sessionId);
+        app.terminalBufferCache.delete(sessionId);
+        app._xtermSnapshots.delete(sessionId);
+        app._warmTerminalCache.remove(sessionId);
+        app._terminalHistoryPaging.delete(sessionId);
+        app._lastResizeDimsBySession?.delete(sessionId);
+        localStorage.removeItem(`codeman-xs-${sessionId}`);
+      }
+    });
+
+    expect(result.firstSnapshotDelay).toBeGreaterThanOrEqual(350);
+    expect(result.text).toContain('ALIGNED_DIFF_MARKERS');
+    expect(result.text).not.toContain('BROKEN_DIFF_MARKERS');
+  });
+
   it('forces the full desktop PTY size when a session tab is reactivated', async () => {
     ({ context, page } = await freshPage());
     await navigateAndWait(page);

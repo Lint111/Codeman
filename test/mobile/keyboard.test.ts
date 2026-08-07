@@ -1233,6 +1233,82 @@ describe('Virtual Keyboard', () => {
       expect(state.sentInputs).toEqual([]);
     });
 
+    it('reopens the keyboard from every visible row of a wrapped local draft', async () => {
+      const point = await page.evaluate(async () => {
+        window.__sentInputs = [];
+        const sessionId = 'mobile-wrapped-draft-focus-test';
+        app.activeSessionId = sessionId;
+        app.sessions.set(sessionId, {
+          id: sessionId,
+          mode: 'codex',
+          status: 'running',
+        });
+        app._sendInputAsync = (_sessionId: string, input: string) => {
+          window.__sentInputs.push(input);
+        };
+        app.hideWelcome();
+        const settings = app.loadAppSettingsFromStorage();
+        settings.cjkInputEnabled = false;
+        settings.localEchoEnabled = true;
+        app.saveAppSettingsToStorage(settings);
+        app._updateCjkInputState();
+        app._updateLocalEchoState();
+        app.terminal.reset();
+        await new Promise<void>((resolve) => app.terminal.write('Earlier response\r\n\r\n› ', resolve));
+        app._localEchoOverlay.clear();
+        app._localEchoOverlay.appendText('wrapped draft text '.repeat(Math.max(16, app.terminal.cols)));
+
+        const screen = app.terminal.element?.querySelector('.xterm-screen');
+        if (!(screen instanceof HTMLElement)) return null;
+        const overlay = Array.from(screen.children).find(
+          (element) => element instanceof HTMLElement && element.style.zIndex === '7'
+        );
+        if (!(overlay instanceof HTMLElement)) return null;
+        const draftRows = Array.from(overlay.children).filter(
+          (element) => element instanceof HTMLElement && element.tagName === 'DIV'
+        ) as HTMLElement[];
+        if (draftRows.length < 2) return null;
+
+        const originalPromptRow = app.terminal.buffer.active.cursorY;
+        const cell = app.terminal._core?._renderService?.dimensions?.css?.cell;
+        const screenRect = screen.getBoundingClientRect();
+        const row = draftRows.find((candidate) => {
+          const rect = candidate.getBoundingClientRect();
+          const rowIndex = Math.floor((rect.top - screenRect.top + rect.height / 2) / (cell?.height || 1));
+          return rowIndex !== originalPromptRow;
+        });
+        if (!row) return null;
+        const rect = row.getBoundingClientRect();
+        const x = rect.left + Math.min(rect.width / 2, 32);
+        const y = rect.top + rect.height / 2;
+        (document.activeElement as HTMLElement | null)?.blur?.();
+        return {
+          x,
+          y,
+          draftRows: draftRows.length,
+          intent: app._classifyMobileTerminalTap(x, y),
+        };
+      });
+      expect(point).toEqual(
+        expect.objectContaining({
+          draftRows: expect.any(Number),
+          intent: 'input',
+        })
+      );
+      expect(point!.draftRows).toBeGreaterThan(1);
+
+      await page.touchscreen.tap(point!.x, point!.y);
+
+      const state = await page.evaluate(() => ({
+        activeClass: document.activeElement?.className,
+        sentInputs: window.__sentInputs,
+        pendingText: app._localEchoOverlay.pendingText,
+      }));
+      expect(state.activeClass).toContain('xterm-helper-textarea');
+      expect(state.sentInputs).toEqual([]);
+      expect(state.pendingText.length).toBeGreaterThan(100);
+    });
+
     it('focuses the live Claude cursor when a redraw omits the prompt glyph', async () => {
       const point = await page.evaluate(async () => {
         window.__sentInputs = [];
@@ -1999,7 +2075,7 @@ describe('Virtual Keyboard', () => {
       expect(state.keyboardFitCalls).toBe(0);
     });
 
-    it('keeps the outgoing frame immutable while bounded target history loads off-screen', async () => {
+    it('replaces the outgoing cover with the latest target frame while target history loads off-screen', async () => {
       const state = await page.evaluate(async () => {
         const sourceId = 'history-replay-source';
         const targetId = 'history-replay-target';
@@ -2119,7 +2195,7 @@ describe('Virtual Keyboard', () => {
           for (let attempt = 0; attempt < 40; attempt++) {
             await new Promise((resolve) => setTimeout(resolve, 25));
             const cover = app.terminal.element?.querySelector('.terminal-history-replay-cover') as HTMLElement | null;
-            if (historyChunksSent < 1 || !cover || !cover.textContent?.includes('OUTGOING SOURCE FRAME')) {
+            if (historyChunksSent < 1 || !cover || !cover.textContent?.includes('LATEST TARGET FRAME')) {
               continue;
             }
             const screen = app.terminal.element?.querySelector('.xterm-screen') as HTMLElement | null;
@@ -2172,8 +2248,8 @@ describe('Virtual Keyboard', () => {
 
       expect(state.historyChunksSent).toBeGreaterThan(2);
       expect(state.samples.length).toBeGreaterThan(2);
-      expect(state.samples.every((sample) => sample.coverText.includes('OUTGOING SOURCE FRAME'))).toBe(true);
-      expect(state.samples.every((sample) => !sample.coverText.includes('LATEST TARGET FRAME'))).toBe(true);
+      expect(state.samples.every((sample) => sample.coverText.includes('LATEST TARGET FRAME'))).toBe(true);
+      expect(state.samples.every((sample) => !sample.coverText.includes('OUTGOING SOURCE FRAME'))).toBe(true);
       expect(state.samples.every((sample) => !sample.coverText.includes('HISTORY_'))).toBe(true);
       expect(state.samples.every((sample) => sample.viewportY === sample.baseY)).toBe(true);
       expect(Math.max(...state.samples.map((sample) => sample.baseY))).toBe(
@@ -2183,7 +2259,7 @@ describe('Virtual Keyboard', () => {
       expect(state.finalBaseY).toBeGreaterThan(state.samples[0].baseY);
       expect(state.finalViewportY).toBe(state.finalBaseY);
       expect(state.finalVisibleRows).toContain('LATEST TARGET FRAME');
-      expect(state.coverCaptureCount).toBe(1);
+      expect(state.coverCaptureCount).toBe(2);
       expect(state.paging).toEqual({ start: 0, end: 360, total: 360, pages: 1 });
       expect(state.coverRemoved).toBe(true);
     });
@@ -2377,7 +2453,7 @@ describe('Virtual Keyboard', () => {
       expect(result.localCalls).toEqual([]);
     });
 
-    it('keeps typed phone text in the terminal local echo path', async () => {
+    it('submits typed phone text through the explicit Enter control', async () => {
       await page.evaluate(() => {
         window.__sentInputs = [];
         app.activeSessionId = 'mobile-visible-input-test';
@@ -2418,7 +2494,7 @@ describe('Virtual Keyboard', () => {
       expect(beforeEnter.pendingText).toBe('find bug');
       expect(beforeEnter.sentInputs).toEqual([]);
 
-      await page.keyboard.press('Enter');
+      await page.evaluate(() => app.sendEnterKey());
       await page.waitForFunction(() => window.__sentInputs?.join('') === 'find bug\r');
 
       const afterEnter = await page.evaluate(() => ({
@@ -3737,7 +3813,7 @@ describe('Virtual Keyboard', () => {
       ]);
     });
 
-    it('keeps back-to-back local echo submissions in text-then-Enter order', async () => {
+    it('keeps back-to-back explicit submissions in text-then-Enter order', async () => {
       await page.evaluate(() => {
         window.__sentInputs = [];
         app.activeSessionId = 'mobile-rapid-submit-test';
@@ -3760,11 +3836,62 @@ describe('Virtual Keyboard', () => {
       });
 
       await page.keyboard.type('first');
-      await page.keyboard.press('Enter');
+      await page.evaluate(() => app.sendEnterKey());
       await page.keyboard.type('second');
-      await page.keyboard.press('Enter');
+      await page.evaluate(() => app.sendEnterKey());
 
       await expect.poll(() => page.evaluate(() => window.__sentInputs)).toEqual(['first', '\r', 'second', '\r']);
+    });
+
+    it('keeps a keyCode 13 phone Enter in the draft instead of submitting it', async () => {
+      await page.evaluate(async () => {
+        window.__sentInputs = [];
+        app.activeSessionId = 'mobile-keycode-13-enter-test';
+        app.sessions.set('mobile-keycode-13-enter-test', {
+          id: 'mobile-keycode-13-enter-test',
+          mode: 'codex',
+          status: 'running',
+        });
+        app.hideWelcome();
+        app._sendInputAsync = (_sessionId: string, input: string) => {
+          window.__sentInputs.push(input);
+        };
+        const settings = app.loadAppSettingsFromStorage();
+        settings.cjkInputEnabled = false;
+        settings.localEchoEnabled = true;
+        app.saveAppSettingsToStorage(settings);
+        app._updateCjkInputState();
+        app._updateLocalEchoState();
+        app.terminal.reset();
+        await new Promise<void>((resolve) => {
+          app.terminal.write('\x1b[2J\x1b[H\u276f ', resolve);
+        });
+        app._localEchoOverlay.clear();
+        app.terminal.focus();
+
+        const mobileDetection = (window as any).MobileDetection;
+        const originalIsTouchDevice = mobileDetection.isTouchDevice;
+        (window as any).__restoreIsTouchDevice = () => {
+          mobileDetection.isTouchDevice = originalIsTouchDevice;
+          delete (window as any).__restoreIsTouchDevice;
+        };
+        mobileDetection.isTouchDevice = () => true;
+      });
+      try {
+        await page.keyboard.type('stringA');
+        await page.keyboard.press('Enter');
+        const state = await page.evaluate(() => ({
+          sentInputs: window.__sentInputs,
+          pendingText: app._localEchoOverlay.pendingText,
+        }));
+
+        expect(state).toEqual({
+          sentInputs: [],
+          pendingText: 'stringA\n',
+        });
+      } finally {
+        await page.evaluate(() => (window as any).__restoreIsTouchDevice?.());
+      }
     });
 
     it('inserts Android keyCode 229 line-break input into the current draft', async () => {

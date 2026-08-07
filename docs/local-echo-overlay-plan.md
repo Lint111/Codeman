@@ -14,6 +14,8 @@
 > input invalidates it, so the two browser routes cannot append one word twice.
 
 > **Durability rule:** `TerminalInputStateStore` owns each session's pending, flushed, and optional CJK draft text separately from submitted input delivery. Lifecycle suspension calls `capture()` and only saves the draft; it never sends it. Session/Home switching calls `handoff()`, explicitly delivers the returned `flushText`, and persists flushed metadata so reload does not break Backspace. Restoration uses `get()` plus `restoreDraft(..., false)` until the target terminal frame is ready.
+>
+> **Touch-focus rule:** the addon owns the rendered draft geometry as well as wrapping. Mobile consumers call `containsClientPoint()` before classifying terminal-buffer rows, so every visible row of a long draft reopens the keyboard while taps on unrelated transcript or decision content remain keyboard-free.
 
 ## Context
 
@@ -203,7 +205,8 @@ class LocalEchoOverlay {
 
 **Input handler (`terminal.onData`):**
 - Backspace (`\x7f`): if overlay has pending + echo enabled → `overlay.removeChar()`
-- Enter (`\r`/`\n`): `overlay.clear()`, disable echo (session goes busy)
+- Explicit submit (`sendControl('\r')`, including toolbar/navigation Enter): flush the draft, clear it, then send one carriage return
+- Touch-keyboard Enter: `handleMobileEnterKeydown()` inserts one editable newline and cancels the native textarea default; a following Android line-break `beforeinput` is consumed without adding a second newline
 - Other control chars / multi-char (paste): `overlay.clear()`
 - Single printable char (charCode >= 32, length === 1): if echo enabled → `overlay.addChar(data)`
 

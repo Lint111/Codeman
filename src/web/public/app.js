@@ -653,7 +653,6 @@ class CodemanApp {
     this._bufferLoadOwner = null;
     this._terminalHistoryReplayCover = null;
     this._terminalHistoryReplayCoverOwner = null;
-    this._terminalHistoryReplayCoverHasContent = false;
     this._terminalHistoryReplayCoverComplete = false;
     this._terminalHistoryReplayCoverCompleteAt = 0;
     this._terminalHistoryReplayCoverVersion = 0;
@@ -3241,6 +3240,7 @@ class CodemanApp {
     this.terminalBufferCache.clear();
     this._xtermSnapshots?.clear();
     this._warmTerminalCache.clear();
+    this._lastResizeDimsBySession?.clear();
     this._terminalHistoryPaging.clear();
     this._clearTimer('_warmTerminalExpiryTimer');
     this.projectInsights.clear();
@@ -3560,6 +3560,8 @@ class CodemanApp {
             this.findParentSessionForSubagent(agentId);
           }
         }
+
+        this.syncSubagentPanelSession?.();
 
         // Finally, restore window states (this opens windows with correct parent info)
         this.restoreSubagentWindowStates();
@@ -4555,6 +4557,7 @@ class CodemanApp {
 
     this._cleanupPreviousSession(sessionId);
     this.activeSessionId = sessionId;
+    this.syncSubagentPanelSession?.(sessionId);
     // Gate destination output before attach/resize can yield to the event loop.
     // A fresh or restored TUI may emit immediately; those bytes must reconcile
     // against its snapshot instead of entering the shared xterm parser directly.
@@ -4848,7 +4851,7 @@ class CodemanApp {
               this._clearTerminalLoadState(sessionId, selectGen);
               return;
             }
-            if (this._replaceTerminalHistoryReplayCover(selectGen, { onlyIfEmpty: true })) {
+            if (this._replaceTerminalHistoryReplayCover(selectGen)) {
               if (typeof KeyboardHandler !== 'undefined') {
                 KeyboardHandler._discardTerminalFrameCover?.();
               }
@@ -5130,6 +5133,7 @@ class CodemanApp {
     this._xtermSnapshots?.delete(sessionId);
     this._terminalHistoryPaging.delete(sessionId);
     this._warmTerminalCache.remove(sessionId);
+    this._lastResizeDimsBySession?.delete(sessionId);
     this._scheduleWarmTerminalExpiry();
     try { localStorage.removeItem(`codeman-xs-${sessionId}`); } catch {}
 
@@ -5413,6 +5417,7 @@ class CodemanApp {
       this.terminalLoadStates.clear();
       this._xtermSnapshots?.clear();
       this._warmTerminalCache.clear();
+      this._lastResizeDimsBySession?.clear();
       this._terminalHistoryPaging.clear();
       this._clearTimer('_warmTerminalExpiryTimer');
       this._inputState.clearAll({ persist: false });

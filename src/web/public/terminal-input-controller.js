@@ -57,6 +57,8 @@ class TerminalInputController {
     this._lastKeydownHandledAt = -Infinity;
     this._lastBackspaceKeydownAt = -Infinity;
     this._lastMobileEnterKeydownAt = -Infinity;
+    this._mobileEnterKeydownAction = null;
+    this._mobileEnterKeydownHandledAt = -Infinity;
     this._mobileLineBreakPending = false;
     this._mobileLineBreakFallbackTimer = null;
     this._textareaListeners = [];
@@ -311,6 +313,48 @@ class TerminalInputController {
     this._deliver(this._getSessionId(), data);
   }
 
+  /**
+   * Own an unmodified Enter keydown from a touch keyboard before xterm can
+   * translate it to a carriage return. Local-echo sessions keep it as an
+   * editable line break; immediate-echo shells submit it once.
+   */
+  handleMobileEnterKeydown(event = {}) {
+    const sessionId = this._getSessionId();
+    if (!sessionId) return false;
+
+    const now = this._now();
+    const composing = event.isComposing === true || event.keyCode === 229 || this._compositionActive;
+    const duplicateListenerPass =
+      this._mobileEnterKeydownAction !== null && now - this._mobileEnterKeydownHandledAt < 50;
+    this._lastMobileEnterKeydownAt = now;
+
+    if (composing) {
+      this._mobileEnterKeydownAction = null;
+      this._mobileEnterKeydownHandledAt = -Infinity;
+      this._trace('mobile-enter-keydown', { action: 'defer-composition' });
+      return true;
+    }
+
+    if (duplicateListenerPass) {
+      this._trace('mobile-enter-keydown', {
+        action: this._mobileEnterKeydownAction,
+        duplicate: true,
+      });
+      return true;
+    }
+
+    const action = this._isLocalEchoEnabled() ? 'linebreak' : 'submit';
+    if (action === 'linebreak') {
+      this.insertDraftLineBreak();
+    } else {
+      this.sendControl('\r');
+    }
+    this._mobileEnterKeydownAction = action;
+    this._mobileEnterKeydownHandledAt = now;
+    this._trace('mobile-enter-keydown', { action });
+    return true;
+  }
+
   insertText(text) {
     const sessionId = this._getSessionId();
     if (!sessionId || !text) return;
@@ -506,7 +550,7 @@ class TerminalInputController {
     });
     on(textarea, 'keydown', (event) => {
       if (event.key === 'Enter') {
-        this._lastMobileEnterKeydownAt = this._now();
+        this.handleMobileEnterKeydown(event);
       }
       if (!event.isComposing && event.keyCode === 229) {
         this._helperMutationSnapshot = this._captureHelperMutationSnapshot();
@@ -527,11 +571,19 @@ class TerminalInputController {
         }
 
         const isLineBreak = event.inputType === 'insertLineBreak' || event.inputType === 'insertParagraph';
-        const followsMobileEnter = isLineBreak && this._now() - this._lastMobileEnterKeydownAt < 500;
+        const now = this._now();
+        const followsMobileEnter = isLineBreak && now - this._lastMobileEnterKeydownAt < 500;
         if (followsMobileEnter && this._getSessionId()) {
           event.preventDefault();
           event.stopImmediatePropagation();
+          const keydownAction = now - this._mobileEnterKeydownHandledAt < 500 ? this._mobileEnterKeydownAction : null;
           this._lastMobileEnterKeydownAt = -Infinity;
+          this._mobileEnterKeydownAction = null;
+          this._mobileEnterKeydownHandledAt = -Infinity;
+          if (keydownAction) {
+            this._trace('mobile-enter-beforeinput-drop', { action: keydownAction });
+            return;
+          }
           if (!this._isLocalEchoEnabled()) {
             this.insertDraftLineBreak();
             return;
@@ -1006,6 +1058,8 @@ class TerminalInputController {
     this._lastKeydownHandledAt = -Infinity;
     this._lastBackspaceKeydownAt = -Infinity;
     this._lastMobileEnterKeydownAt = -Infinity;
+    this._mobileEnterKeydownAction = null;
+    this._mobileEnterKeydownHandledAt = -Infinity;
     this._compositionEpoch += 1;
     this._getOverlay()?.clearComposition?.();
   }

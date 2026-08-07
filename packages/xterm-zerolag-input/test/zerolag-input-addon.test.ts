@@ -160,6 +160,30 @@ describe('ZerolagInputAddon', () => {
     });
   });
 
+  describe('visible draft hit testing', () => {
+    it('matches every rendered draft row and ignores hidden or outside points', () => {
+      const { addon, mock } = tracked();
+      addon.appendText('first\nsecond');
+
+      const overlay = mock.terminal.element.querySelector('.xterm-screen')!.lastElementChild as HTMLDivElement;
+      const rows = Array.from(overlay.children).filter((element): element is HTMLElement => element.tagName === 'DIV');
+      expect(rows).toHaveLength(2);
+
+      rows[0].getBoundingClientRect = () =>
+        ({ left: 20, top: 40, right: 120, bottom: 50, width: 100, height: 10, x: 20, y: 40, toJSON() {} }) as DOMRect;
+      rows[1].getBoundingClientRect = () =>
+        ({ left: 0, top: 50, right: 120, bottom: 60, width: 120, height: 10, x: 0, y: 50, toJSON() {} }) as DOMRect;
+
+      expect(addon.containsClientPoint(80, 45)).toBe(true);
+      expect(addon.containsClientPoint(10, 45)).toBe(false);
+      expect(addon.containsClientPoint(10, 55)).toBe(true);
+      expect(addon.containsClientPoint(140, 55)).toBe(false);
+
+      addon.clear();
+      expect(addon.containsClientPoint(80, 45)).toBe(false);
+    });
+  });
+
   describe('composition text', () => {
     it('renders changing IME candidates without committing them to pending text', () => {
       const { addon, mock } = tracked();

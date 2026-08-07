@@ -8,6 +8,7 @@
  *
  * @mixin Extends CodemanApp.prototype via Object.assign
  * @dependency app.js (CodemanApp class, this.subagents, this.subagentWindows, this.sessions)
+ * @dependency subagent-transcript-view.js (semantic message, tool, and diff renderer)
  * @dependency constants.js (escapeHtml, ZINDEX_* constants)
  * @dependency subagent-windows.js (openSubagentWindow, closeSubagentWindow)
  * @loadorder 11 of 15 — loaded after settings-ui.js, before session-ui.js
@@ -137,10 +138,10 @@ Object.assign(CodemanApp.prototype, {
     if (this.subagentWindows.has(data.agentId)) {
       this.forceCloseSubagentWindow(data.agentId);
     }
-    this.renderSubagentPanel();
-
-    // Find which Codeman session owns this subagent (direct claudeSessionId match only)
+    // Resolve ownership before rendering so the active-session filter never
+    // flashes this agent under an unrelated tab.
     this.findParentSessionForSubagent(data.agentId);
+    this.renderSubagentPanel();
 
     // Subagent windows are no longer auto-opened on discovery.
     // Users can open them manually from the monitor panel or via openAllActiveSubagentWindows().
@@ -178,6 +179,7 @@ Object.assign(CodemanApp.prototype, {
     ) {
       this.focusFileBrowserSubagent(data.agentId, { force: true });
     }
+    this._scheduleSubagentTranscriptRefresh(data.agentId);
   },
 
   _onSubagentToolCall(data) {
@@ -190,6 +192,7 @@ Object.assign(CodemanApp.prototype, {
     if (this.subagentWindows.has(data.agentId)) {
       this.scheduleSubagentWindowRender(data.agentId);
     }
+    this._scheduleSubagentTranscriptRefresh(data.agentId);
   },
 
   _onSubagentProgress(data) {
@@ -201,6 +204,7 @@ Object.assign(CodemanApp.prototype, {
     if (this.subagentWindows.has(data.agentId)) {
       this.scheduleSubagentWindowRender(data.agentId);
     }
+    this._scheduleSubagentTranscriptRefresh(data.agentId);
   },
 
   _onSubagentMessage(data) {
@@ -212,6 +216,7 @@ Object.assign(CodemanApp.prototype, {
     if (this.subagentWindows.has(data.agentId)) {
       this.scheduleSubagentWindowRender(data.agentId);
     }
+    this._scheduleSubagentTranscriptRefresh(data.agentId);
   },
 
   _onSubagentToolResult(data) {
@@ -236,6 +241,7 @@ Object.assign(CodemanApp.prototype, {
     if (this.subagentWindows.has(data.agentId)) {
       this.scheduleSubagentWindowRender(data.agentId);
     }
+    this._scheduleSubagentTranscriptRefresh(data.agentId);
   },
 
   async _onSubagentCompleted(data) {
@@ -246,6 +252,7 @@ Object.assign(CodemanApp.prototype, {
     }
     this.renderSubagentPanel();
     this.updateSubagentWindows();
+    this._scheduleSubagentTranscriptRefresh(data.agentId);
 
     // Auto-minimize completed subagent windows
     if (this.subagentWindows.has(data.agentId)) {
@@ -1415,12 +1422,36 @@ Object.assign(CodemanApp.prototype, {
 
   updateSubagentBadge() {
     const badge = this.$('subagentCountBadge');
-    const activeCount = Array.from(this.subagents.values()).filter(s => s.status === 'active' || s.status === 'idle').length;
+    const activeCount = this.getSubagentsForActiveSession().filter(
+      agent => agent.status === 'active' || agent.status === 'idle'
+    ).length;
 
     // Update badge with active count
     if (badge) {
       badge.textContent = activeCount > 0 ? activeCount : '';
     }
+  },
+
+  getSubagentsForActiveSession(sessionId = this.activeSessionId) {
+    if (!sessionId) return [];
+    return Array.from(this.subagents.values()).filter(
+      agent => this.getFileBrowserSubagentParentSessionId(agent.agentId) === sessionId
+    );
+  },
+
+  syncSubagentPanelSession(sessionId = this.activeSessionId) {
+    if (
+      this.activeSubagentId &&
+      this.getFileBrowserSubagentParentSessionId(this.activeSubagentId) !== sessionId
+    ) {
+      this.activeSubagentId = null;
+    }
+    if (this._subagentPanelRenderTimeout) {
+      clearTimeout(this._subagentPanelRenderTimeout);
+      this._subagentPanelRenderTimeout = null;
+    }
+    this._renderSubagentPanelImmediate();
+    this.renderSubagentDetail();
   },
 
   renderSubagentPanel() {
@@ -1449,13 +1480,14 @@ Object.assign(CodemanApp.prototype, {
     }
 
     // Render subagent list
-    if (this.subagents.size === 0) {
-      list.innerHTML = '<div class="subagent-empty">No background agents detected</div>';
+    const sessionSubagents = this.getSubagentsForActiveSession();
+    if (sessionSubagents.length === 0) {
+      list.innerHTML = '<div class="subagent-empty">No background agents for this session</div>';
       return;
     }
 
     const html = [];
-    const sorted = Array.from(this.subagents.values()).sort((a, b) => {
+    const sorted = sessionSubagents.sort((a, b) => {
       // Active first, then by last activity
       if (a.status === 'active' && b.status !== 'active') return -1;
       if (b.status === 'active' && a.status !== 'active') return 1;
@@ -1469,7 +1501,7 @@ Object.assign(CodemanApp.prototype, {
       const lastActivity = activity[activity.length - 1];
       const lastTool = lastActivity?.type === 'tool' ? lastActivity.tool : null;
       const hasWindow = this.subagentWindows.has(agent.agentId);
-      const canKill = agent.status === 'active' || agent.status === 'idle';
+      const canKill = agent.canKill !== false && (agent.status === 'active' || agent.status === 'idle');
       const modelBadge = agent.modelShort
         ? `<span class="subagent-model-badge ${escapeHtml(agent.modelShort)}">${escapeHtml(agent.modelShort)}</span>`
         : '';
@@ -1480,6 +1512,7 @@ Object.assign(CodemanApp.prototype, {
       const agentIcon = teammateInfo ? `<span class="subagent-icon teammate-dot teammate-color-${teammateInfo.color}">●</span>` : '<span class="subagent-icon">🤖</span>';
       html.push(`
         <div class="subagent-item ${statusClass} ${isActive ? 'selected' : ''}${teammateInfo ? ' is-teammate' : ''}"
+             data-agent-id="${escapeHtml(agent.agentId)}"
              onclick="app.selectSubagent(${escapeHtml(JSON.stringify(agent.agentId))})"
              ondblclick="app.openSubagentWindow(${escapeHtml(JSON.stringify(agent.agentId))})"
              title="Double-click to open tracking window">
@@ -1506,6 +1539,7 @@ Object.assign(CodemanApp.prototype, {
   },
 
   selectSubagent(agentId) {
+    if (this.getFileBrowserSubagentParentSessionId(agentId) !== this.activeSessionId) return null;
     this.activeSubagentId = agentId;
     this.renderSubagentPanel();
     this.renderSubagentDetail();
@@ -1524,7 +1558,11 @@ Object.assign(CodemanApp.prototype, {
     const agent = this.subagents.get(this.activeSubagentId);
     const activity = this.subagentActivity.get(this.activeSubagentId) || [];
 
-    if (!agent) {
+    if (
+      !agent ||
+      this.getFileBrowserSubagentParentSessionId(this.activeSubagentId) !== this.activeSessionId
+    ) {
+      this.activeSubagentId = null;
       detail.innerHTML = '<div class="subagent-empty">Agent not found</div>';
       return;
     }
@@ -1581,14 +1619,16 @@ Object.assign(CodemanApp.prototype, {
     const tokenStats = (agent.totalInputTokens || agent.totalOutputTokens)
       ? `<span>Tokens: ${this.formatTokenCount(agent.totalInputTokens || 0)}↓ ${this.formatTokenCount(agent.totalOutputTokens || 0)}↑</span>`
       : '';
-
     detail.innerHTML = `
       <div class="subagent-detail-header">
         <span class="subagent-id" title="${escapeHtml(agent.description || agent.agentId)}">${escapeHtml(detailTitle.length > 60 ? detailTitle.substring(0, 60) + '...' : detailTitle)}</span>
         ${modelBadge}
         <span class="subagent-status ${agent.status}">${agent.status}</span>
         <button class="subagent-transcript-btn" onclick="app.viewSubagentTranscript(${escapeHtml(JSON.stringify(agent.agentId))})">
-          View Full Transcript
+          Transcript
+        </button>
+        <button class="subagent-browser-tab-btn" onclick="app.openSubagentBrowserTab(${escapeHtml(JSON.stringify(agent.agentId))})" title="Open transcript in another browser tab" aria-label="Open transcript in another browser tab">
+          &#x2197;
         </button>
       </div>
       <div class="subagent-detail-stats">
@@ -1692,38 +1732,246 @@ Object.assign(CodemanApp.prototype, {
     }
   },
 
-  async viewSubagentTranscript(agentId) {
-    try {
-      const res = await fetch(`/api/subagents/${agentId}/transcript?format=formatted`);
-      const data = await res.json();
+  _ensureSubagentTranscriptViewers() {
+    if (!this._subagentTranscriptViewers) this._subagentTranscriptViewers = new Map();
+    return this._subagentTranscriptViewers;
+  },
 
-      if (!data.success) {
-        alert('Failed to load transcript');
-        return;
+  async _fetchSubagentTranscript(agentId, limit = SUBAGENT_TRANSCRIPT_STREAM_LIMIT, signal) {
+    const params = new URLSearchParams({ format: 'blocks' });
+    if (Number.isFinite(limit) && limit > 0) params.set('limit', String(Math.floor(limit)));
+    const res = await fetch(`/api/subagents/${encodeURIComponent(agentId)}/transcript?${params}`, {
+      cache: 'no-store',
+      signal,
+    });
+    const envelope = await res.json();
+    if (!res.ok || !envelope.success || !envelope.data) {
+      throw new Error(envelope.error || 'Transcript unavailable');
+    }
+    return {
+      blocks: Array.isArray(envelope.data.blocks) ? envelope.data.blocks : [],
+      entryCount: Number(envelope.data.entryCount) || 0,
+      totalEntryCount:
+        Number(envelope.data.totalEntryCount) || Number(envelope.data.entryCount) || 0,
+    };
+  },
+
+  _cleanupSubagentTranscriptViewer(agentId) {
+    const viewers = this._subagentTranscriptViewers;
+    const viewer = viewers?.get(agentId);
+    if (!viewer) return;
+    if (viewer.pollTimer) clearInterval(viewer.pollTimer);
+    if (viewer.refreshTimer) clearTimeout(viewer.refreshTimer);
+    viewer.tailWindow?.dispose();
+    viewer.abortController?.abort();
+    viewers.delete(agentId);
+  },
+
+  _pauseSubagentTranscriptViewer(agentId) {
+    const viewer = this._subagentTranscriptViewers?.get(agentId);
+    if (!viewer) return;
+    if (viewer.refreshTimer) clearTimeout(viewer.refreshTimer);
+    viewer.refreshTimer = null;
+    viewer.abortController?.abort();
+    viewer.abortController = null;
+  },
+
+  _syncSubagentTranscriptViewerHeader(agentId) {
+    const viewer = this._subagentTranscriptViewers?.get(agentId);
+    if (!viewer?.element?.isConnected) return;
+    this.updateSubagentWindowHeader(agentId);
+  },
+
+  _scrollSubagentTranscriptToLatest(agentId) {
+    const viewer = this._subagentTranscriptViewers?.get(agentId);
+    if (!viewer?.element?.isConnected) return;
+    void viewer.tailWindow?.scrollToLatest();
+  },
+
+  _setSubagentTranscriptMode(agentId, mode) {
+    const normalizedMode = mode === 'activity' ? 'activity' : 'transcript';
+    let viewer = this._subagentTranscriptViewers?.get(agentId);
+    if (!viewer && normalizedMode !== 'activity') viewer = this._mountSubagentTranscriptViewer(agentId);
+    if (!viewer?.element?.isConnected) return;
+
+    viewer.mode = normalizedMode;
+    const transcriptVisible = normalizedMode !== 'activity';
+    viewer.element.classList.toggle('subagent-window-transcript-open', transcriptVisible);
+    viewer.elements.activityPane.hidden = transcriptVisible;
+    viewer.elements.transcriptPane.hidden = !transcriptVisible;
+    viewer.elements.footer.hidden = !transcriptVisible;
+    for (const button of [viewer.elements.activityButton, viewer.elements.transcriptButton]) {
+      const active = button.dataset.mode === normalizedMode;
+      button.classList.toggle('active', active);
+      button.setAttribute('aria-pressed', String(active));
+    }
+
+    if (!transcriptVisible) {
+      this._pauseSubagentTranscriptViewer(agentId);
+      const terminal = this.teammateTerminals.get(agentId);
+      requestAnimationFrame(() => terminal?.fitAddon?.fit());
+      return;
+    }
+
+    viewer.tailWindow.reset();
+    viewer.lastContent = null;
+    void this._refreshSubagentTranscriptViewer(agentId, { scrollLatest: true });
+  },
+
+  _scheduleSubagentTranscriptRefresh(agentId) {
+    if (typeof this._scheduleUltracodeAgentTranscriptRefresh === 'function') {
+      this._scheduleUltracodeAgentTranscriptRefresh(agentId);
+    }
+    const viewer = this._subagentTranscriptViewers?.get(agentId);
+    if (!viewer) return;
+    if (!viewer.element?.isConnected) {
+      this._cleanupSubagentTranscriptViewer(agentId);
+      return;
+    }
+    this._syncSubagentTranscriptViewerHeader(agentId);
+    const windowData = this.subagentWindows.get(agentId);
+    if (viewer.mode !== 'transcript' || windowData?.minimized || windowData?.hidden) return;
+    if (viewer.refreshTimer) clearTimeout(viewer.refreshTimer);
+    viewer.refreshTimer = setTimeout(() => {
+      viewer.refreshTimer = null;
+      void this._refreshSubagentTranscriptViewer(agentId);
+    }, SUBAGENT_TRANSCRIPT_REFRESH_DEBOUNCE_MS);
+  },
+
+  async _refreshSubagentTranscriptViewer(agentId, options = {}) {
+    const viewer = this._subagentTranscriptViewers?.get(agentId);
+    if (!viewer?.element?.isConnected) {
+      this._cleanupSubagentTranscriptViewer(agentId);
+      return;
+    }
+    if (viewer.mode === 'activity') return;
+
+    const requestId = ++viewer.requestId;
+    const anchor = viewer.tailWindow.captureAnchor();
+    viewer.abortController?.abort();
+    const controller = new AbortController();
+    viewer.abortController = controller;
+
+    try {
+      const data = await this._fetchSubagentTranscript(
+        agentId,
+        viewer.tailWindow.limit,
+        controller.signal
+      );
+      if (requestId !== viewer.requestId || !viewer.element.isConnected) return;
+
+      const content = JSON.stringify(data.blocks);
+      const firstRender = viewer.lastContent === null;
+      if (content !== viewer.lastContent) {
+        viewer.lastContent = content;
+        SubagentTranscriptView.replace(
+          viewer.elements.content,
+          data.blocks,
+          (markdown) => this._renderMarkdown(markdown)
+        );
+        this._bindResponseViewerInteractions(viewer.elements.content);
       }
 
-      // Show in a modal or new window
-      const content = data.data.formatted.join('\n');
-      const win = window.open('', '_blank', 'width=800,height=600');
-      win.document.write(`
-        <html>
-          <head>
-            <title>Subagent ${escapeHtml(agentId)} Transcript</title>
-            <style>
-              body { background: #1a1a2e; color: #eee; font-family: monospace; padding: 20px; }
-              pre { white-space: pre-wrap; word-wrap: break-word; }
-            </style>
-          </head>
-          <body>
-            <h2>Subagent ${escapeHtml(agentId)} Transcript (${data.data.entryCount} entries)</h2>
-            <pre>${escapeHtml(content)}</pre>
-          </body>
-        </html>
-      `);
+      viewer.tailWindow.setCounts(data.entryCount, data.totalEntryCount);
+      viewer.tailWindow.restoreAfterRender(anchor, {
+        preserveAnchor: options.preserveAnchor === true,
+        scrollLatest: options.scrollLatest === true,
+        firstRender,
+      });
+      viewer.elements.meta.textContent = `${data.entryCount} of ${data.totalEntryCount} entries · ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}`;
+      this._syncSubagentTranscriptViewerHeader(agentId);
     } catch (err) {
-      console.error('Failed to load transcript:', err);
-      alert('Failed to load transcript: ' + err.message);
+      if (err?.name === 'AbortError' || requestId !== viewer.requestId) return;
+      viewer.elements.meta.textContent = 'Refresh failed · retrying';
+      console.error('Failed to refresh subagent transcript:', err);
     }
+  },
+
+  _mountSubagentTranscriptViewer(agentId) {
+    const viewers = this._ensureSubagentTranscriptViewers();
+    const existing = viewers.get(agentId);
+    if (existing?.element?.isConnected) return existing;
+    if (existing) this._cleanupSubagentTranscriptViewer(agentId);
+
+    const windowData = this.subagentWindows.get(agentId);
+    const element = windowData?.element;
+    if (!element?.isConnected) return null;
+    const elements = {
+      activityPane: element.querySelector('.subagent-window-activity-pane'),
+      transcriptPane: element.querySelector('.subagent-window-transcript-pane'),
+      footer: element.querySelector('.subagent-window-transcript-footer'),
+      meta: element.querySelector('[data-role="meta"]'),
+      scroller: element.querySelector('[data-role="scroller"]'),
+      content: element.querySelector('[data-role="content"]'),
+      latest: element.querySelector('[data-role="latest"]'),
+      activityButton: element.querySelector('[data-mode="activity"]'),
+      transcriptButton: element.querySelector('[data-mode="transcript"]'),
+    };
+    if (Object.values(elements).some((element) => !element)) {
+      this.showToast('Failed to load the subagent transcript view', 'error');
+      return null;
+    }
+
+    const viewer = {
+      element,
+      mode: 'activity',
+      lastContent: null,
+      requestId: 0,
+      abortController: null,
+      refreshTimer: null,
+      pollTimer: null,
+      elements,
+      tailWindow: null,
+    };
+    viewers.set(agentId, viewer);
+
+    viewer.tailWindow = SubagentTranscriptView.createTailWindow({
+      scroller: elements.scroller,
+      latestButton: elements.latest,
+      initialLimit: SUBAGENT_TRANSCRIPT_STREAM_LIMIT,
+      pageSize: SUBAGENT_TRANSCRIPT_STREAM_LIMIT,
+      followThreshold: SUBAGENT_TRANSCRIPT_FOLLOW_THRESHOLD_PX,
+      onRequest: requestOptions => this._refreshSubagentTranscriptViewer(agentId, requestOptions),
+    });
+
+    viewer.pollTimer = setInterval(() => {
+      if (!viewer.element.isConnected || this._subagentTranscriptViewers?.get(agentId) !== viewer) {
+        this._cleanupSubagentTranscriptViewer(agentId);
+        return;
+      }
+      const currentWindow = this.subagentWindows.get(agentId);
+      if (
+        viewer.mode === 'transcript' &&
+        !currentWindow?.minimized &&
+        !currentWindow?.hidden &&
+        this.subagents.get(agentId)?.status !== 'completed'
+      ) {
+        void this._refreshSubagentTranscriptViewer(agentId);
+      }
+    }, SUBAGENT_TRANSCRIPT_POLL_MS);
+
+    this._syncSubagentTranscriptViewerHeader(agentId);
+    return viewer;
+  },
+
+  viewSubagentTranscript(agentId) {
+    this.openSubagentWindow(agentId, { focusFileBrowser: false, transcriptMode: 'transcript' });
+  },
+
+  openSubagentBrowserTab(agentId) {
+    if (!this.subagents.has(agentId)) return null;
+    const target = `codeman-subagent-${String(agentId).replace(/[^a-z0-9_-]/gi, '-').slice(0, 120)}`;
+    let transcriptTab = null;
+    try {
+      transcriptTab = window.open(`/subagent/${encodeURIComponent(agentId)}`, target);
+      transcriptTab?.focus();
+    } catch {
+      transcriptTab = null;
+    }
+    if (!transcriptTab) {
+      this.showToast('Allow pop-ups to open the transcript tab', 'warning');
+    }
+    return transcriptTab;
   },
 
 
@@ -1932,7 +2180,9 @@ Object.assign(CodemanApp.prototype, {
       return;
     }
 
-    // Insert new parent header after the main header
+    // Keep the view selector directly below the draggable header. Parent context
+    // follows it so neither a late parent assignment nor transcript content can
+    // cover or displace the controls.
     const header = win.querySelector('.subagent-window-header');
     if (header) {
       const parentDiv = document.createElement('div');
@@ -1942,7 +2192,8 @@ Object.assign(CodemanApp.prototype, {
         <span class="parent-label">from</span>
         <span class="parent-name" onclick="app.returnToParentSession(${escapeHtml(JSON.stringify(parentSessionId))})">${escapeHtml(parentName)}</span>
       `;
-      header.insertAdjacentElement('afterend', parentDiv);
+      const controls = win.querySelector('.subagent-window-transcript-controls');
+      (controls || header).insertAdjacentElement('afterend', parentDiv);
     }
   },
 
@@ -1983,12 +2234,14 @@ Object.assign(CodemanApp.prototype, {
           }
         }
         windowInfo.hidden = false;
+        this._scheduleSubagentTranscriptRefresh?.(agentId);
       } else {
         // Hide window (but don't close it)
         // Dispose teammate terminal to free memory while hidden on inactive tab
         this._disposeTeammateTerminalForMinimize(agentId);
         windowInfo.element.style.display = 'none';
         windowInfo.hidden = true;
+        this._pauseSubagentTranscriptViewer?.(agentId);
       }
     }
     // Update connection lines after visibility changes
@@ -2030,6 +2283,7 @@ Object.assign(CodemanApp.prototype, {
   forceCloseSubagentWindow(agentId) {
     const windowData = this.subagentWindows.get(agentId);
     if (windowData) {
+      this._cleanupSubagentTranscriptViewer?.(agentId);
       // Clean up resize observer
       if (windowData.resizeObserver) {
         windowData.resizeObserver.disconnect();
@@ -2073,6 +2327,7 @@ Object.assign(CodemanApp.prototype, {
       this._disposeTeammateTerminalForMinimize(agentId);
       windowData.element.style.display = 'none';
       windowData.minimized = true;
+      this._pauseSubagentTranscriptViewer?.(agentId);
       this.updateConnectionLines();
     }
   },
@@ -2246,6 +2501,11 @@ Object.assign(CodemanApp.prototype, {
     if (statusEl) {
       statusEl.className = `status ${agent.status}`;
       statusEl.textContent = agent.status;
+    }
+
+    const transcriptButton = win.querySelector('[data-mode="transcript"]');
+    if (transcriptButton) {
+      transcriptButton.title = 'Show transcript; scroll upward to load earlier entries';
     }
   },
 
@@ -3196,6 +3456,7 @@ Object.assign(CodemanApp.prototype, {
     const searchRow = this.$('fileBrowserSearchRow');
     const expandBtn = this.$('fileBrowserExpandBtn');
     const workingDirectoryBtn = this.$('fileBrowserWorkingDirectoryBtn');
+    const openEditorBtn = this.$('fileBrowserOpenEditorBtn');
     const changesCount = this.$('fileBrowserChangesCount');
     const available = repository?.available === true;
     const session = this.sessions.get(this.fileBrowserSessionId);
@@ -3207,6 +3468,9 @@ Object.assign(CodemanApp.prototype, {
     if (workingDirectoryBtn) {
       workingDirectoryBtn.hidden =
         Boolean(this.fileBrowserAgentId) || !session || Boolean(session.remote || session.docker);
+    }
+    if (openEditorBtn) {
+      openEditorBtn.hidden = !session || Boolean(session.remote || session.docker);
     }
     if (scopeSelect && available) {
       scopeSelect.replaceChildren();
@@ -4085,6 +4349,58 @@ Object.assign(CodemanApp.prototype, {
     if (headerBtn) headerBtn.setAttribute('aria-expanded', 'false');
   },
 
+  async requestFileBrowserEditor(body, successMessage, button) {
+    if (button) button.disabled = true;
+    try {
+      const sessionId = this.fileBrowserSessionId || this.activeSessionId;
+      if (!sessionId) throw new Error('Open a session first');
+      const response = await this._apiPost(
+        `/api/sessions/${encodeURIComponent(sessionId)}/repository/open-editor`,
+        body
+      );
+      let envelope = null;
+      try {
+        envelope = await response?.json();
+      } catch {}
+      if (!response?.ok || !envelope?.success) {
+        throw new Error(envelope?.error || 'Failed to open VS Code');
+      }
+      this.showToast(successMessage, 'success');
+      return envelope.data;
+    } catch (error) {
+      this.showToast(error?.message || 'Failed to open VS Code', 'error');
+      return null;
+    } finally {
+      if (button) button.disabled = false;
+    }
+  },
+
+  openFileBrowserInEditor() {
+    return this.requestFileBrowserEditor(
+      {
+        scope: this.fileBrowserScopeId || 'current',
+        ...(this.fileBrowserAgentId ? { agentId: this.fileBrowserAgentId } : {}),
+      },
+      'Workspace opened in VS Code',
+      this.$('fileBrowserOpenEditorBtn')
+    );
+  },
+
+  openRepositoryDiffInEditor() {
+    const request = this.fileDiffRequest;
+    if (!request) return null;
+    return this.requestFileBrowserEditor(
+      {
+        scope: request.scopeId,
+        path: request.filePath,
+        ...(request.commit ? { commit: request.commit } : {}),
+        ...(request.agentId ? { agentId: request.agentId } : {}),
+      },
+      'Diff opened in VS Code',
+      this.$('filePreviewOpenEditorBtn')
+    );
+  },
+
   async openRepositoryDiff(filePath, commit = null) {
     const sessionId = this.fileBrowserSessionId || this.activeSessionId;
     const scopeId = this.fileBrowserScopeId;
@@ -4096,17 +4412,20 @@ Object.assign(CodemanApp.prototype, {
     const bodyEl = this.$('filePreviewBody');
     const footerEl = this.$('filePreviewFooter');
     const modeEl = this.$('filePreviewMode');
+    const openEditorBtn = this.$('filePreviewOpenEditorBtn');
     if (!overlay || !bodyEl) return;
 
     const generation = (this.fileDiffLoadGeneration || 0) + 1;
     this.fileDiffLoadGeneration = generation;
     this.fileDiffData = null;
+    this.fileDiffRequest = { sessionId, scopeId, agentId, filePath, commit };
     this.fileDiffMode = 'compact';
     overlay.classList.add('visible');
     if (titleEl) titleEl.textContent = filePath;
     bodyEl.innerHTML = '<div class="binary-message">Loading diff...</div>';
     if (footerEl) footerEl.textContent = '';
     if (modeEl) modeEl.hidden = false;
+    if (openEditorBtn) openEditorBtn.hidden = true;
     this.setRepositoryDiffMode('compact');
 
     try {
@@ -4130,6 +4449,7 @@ Object.assign(CodemanApp.prototype, {
         return;
       }
       this.fileDiffData = result.data;
+      if (openEditorBtn) openEditorBtn.hidden = false;
       this.renderRepositoryDiff();
     } catch (err) {
       if (generation !== this.fileDiffLoadGeneration) return;
@@ -4312,8 +4632,11 @@ Object.assign(CodemanApp.prototype, {
     const generation = (this.fileDiffLoadGeneration || 0) + 1;
     this.fileDiffLoadGeneration = generation;
     this.fileDiffData = null;
+    this.fileDiffRequest = null;
     const modeEl = this.$('filePreviewMode');
+    const openEditorBtn = this.$('filePreviewOpenEditorBtn');
     if (modeEl) modeEl.hidden = true;
+    if (openEditorBtn) openEditorBtn.hidden = true;
     overlay.classList.add('visible');
     titleEl.textContent = filePath;
     bodyEl.innerHTML = '<div class="binary-message">Loading...</div>';
@@ -4456,8 +4779,11 @@ Object.assign(CodemanApp.prototype, {
       overlay.classList.remove('visible');
     }
     const modeEl = this.$('filePreviewMode');
+    const openEditorBtn = this.$('filePreviewOpenEditorBtn');
     if (modeEl) modeEl.hidden = true;
+    if (openEditorBtn) openEditorBtn.hidden = true;
     this.fileDiffData = null;
+    this.fileDiffRequest = null;
     this.filePreviewContent = '';
   },
 
@@ -5458,7 +5784,7 @@ Object.assign(CodemanApp.prototype, {
             </div>
           </div>
           <div class="process-actions">
-            ${agent.status !== 'completed' ? `<button class="btn-toolbar btn-sm btn-danger" onclick="app.killSubagent(${escapeHtml(JSON.stringify(agent.agentId))})" title="Kill agent">Kill</button>` : ''}
+            ${agent.canKill !== false && agent.status !== 'completed' ? `<button class="btn-toolbar btn-sm btn-danger" onclick="app.killSubagent(${escapeHtml(JSON.stringify(agent.agentId))})" title="Kill agent">Kill</button>` : ''}
           </div>
         </div>
       `;

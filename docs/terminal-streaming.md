@@ -87,6 +87,18 @@ selection starts this request together with the newest history page and uses it 
 paint. The latest response supplies the authoritative PTY cursor for live-event
 reconciliation after the composed page replay.
 
+Resize bookkeeping is session-scoped even though xterm itself is shared. On a cold TUI
+selection, the first resize for that session is redraw-producing even when its target
+dimensions match the previously viewed tab; the browser waits for the TUI redraw grace
+before requesting either snapshot. Browser-global dimensions remain only an optimization
+for suppressing duplicate `ResizeObserver` work.
+
+The replay cover is a two-phase handoff. It retains the outgoing screen only until the
+destination's latest pane has painted, then replaces itself with a clone of that destination
+pane while older history assembles underneath. Keeping the outgoing clone for the entire
+history load exposes stale rows at obsolete geometry, which can look like malformed Codex
+diff markers even though the underlying xterm buffer is already correct.
+
 Mobile keyboard resizes, Codex WebSocket attachment, and touch selection of a visible
 terminal decision also request this projection. The browser gates live writes before the
 action can redraw, clears only xterm's visible rows, paints the tmux projection inside a

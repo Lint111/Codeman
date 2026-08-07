@@ -65,6 +65,27 @@ const TERMINAL_ACCESSORY_KEY_ACTIONS = Object.freeze({
   'ctrl-o': 'ctrlO',
 });
 
+const MOBILE_ACCESSORY_PANELS = Object.freeze({
+  monitor: Object.freeze({
+    elementId: 'monitorPanel',
+    settingKey: 'showMonitor',
+    toggleMethod: 'toggleMonitorPanel',
+    label: 'Monitor',
+  }),
+  subagents: Object.freeze({
+    elementId: 'subagentsPanel',
+    settingKey: 'showSubagents',
+    toggleMethod: 'toggleSubagentsPanel',
+    label: 'Subagents',
+  }),
+  ultracode: Object.freeze({
+    elementId: 'ultracodeAgentsPanel',
+    settingKey: 'showUltracodeAgents',
+    toggleMethod: 'toggleUltracodeAgentsPanel',
+    label: 'Ultracode',
+  }),
+});
+
 // ═══════════════════════════════════════════════════════════════
 // Shared Filesystem Path Picker
 // ═══════════════════════════════════════════════════════════════
@@ -433,6 +454,33 @@ const KeyboardAccessoryBar = {
         </svg>
       </button>
       <button class="accessory-btn" data-action="tab" title="Tab">Tab</button>
+      <span class="accessory-panel-controls" role="group" aria-label="Panels" hidden>
+        <button type="button" class="accessory-btn accessory-btn-panel" data-action="panel-monitor"
+                title="Open Monitor panel" aria-label="Open Monitor panel" aria-expanded="false">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <rect x="3" y="4" width="18" height="16" rx="2"/>
+            <path d="M7 15h2l2-6 2 8 2-4h2"/>
+          </svg>
+        </button>
+        <button type="button" class="accessory-btn accessory-btn-panel" data-action="panel-subagents"
+                title="Open Subagents panel" aria-label="Open Subagents panel" aria-expanded="false">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <circle cx="9" cy="8" r="3"/>
+            <circle cx="17" cy="9" r="2"/>
+            <path d="M3 19c0-3 2.5-5 6-5s6 2 6 5"/>
+            <path d="M15 15c3 0 5 1.5 5 4"/>
+          </svg>
+        </button>
+        <button type="button" class="accessory-btn accessory-btn-panel" data-action="panel-ultracode"
+                title="Open Ultracode panel" aria-label="Open Ultracode panel" aria-expanded="false">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <circle cx="6" cy="6" r="2.5"/>
+            <circle cx="6" cy="18" r="2.5"/>
+            <circle cx="18" cy="12" r="2.5"/>
+            <path d="M8.2 7.2 15.6 11M8.2 16.8 15.6 13"/>
+          </svg>
+        </button>
+      </span>
       <button class="accessory-btn" data-action="shift-tab" title="Shift+Tab">⇧Tab</button>
       <button class="accessory-btn" data-action="paste" title="Paste from clipboard">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -475,7 +523,7 @@ const KeyboardAccessoryBar = {
 
       // Refocus terminal so keyboard stays open (tap blurs terminal → keyboard dismisses → toolbar shifts)
       const refocusActions = new Set(['scroll-up', 'scroll-down', 'arrow-left', 'arrow-right', 'tab', 'shift-tab', 'ctrl-o', 'opt-enter', 'esc', 'effort-max', 'clear-input']);
-      if (refocusActions.has(action) ||
+      if (refocusActions.has(action) || action?.startsWith('panel-') ||
           ((action === 'clear' || action === 'compact') && this._confirmAction)) {
         if (typeof app !== 'undefined' && app.terminal) {
           app.terminal.focus();
@@ -499,6 +547,7 @@ const KeyboardAccessoryBar = {
   /** Match the accessory surface to keyboard and modal state. */
   syncVisibility() {
     if (!this.element) return;
+    this.syncPanelButtons();
     const keyboardVisible =
       (typeof KeyboardHandler !== 'undefined' && KeyboardHandler.keyboardVisible) ||
       document.body.classList.contains('keyboard-visible');
@@ -509,6 +558,38 @@ const KeyboardAccessoryBar = {
     this.element.classList.toggle('visible', visible);
     document.body.classList.toggle('keyboard-accessory-visible', visible);
     if (!visible) this.clearConfirm();
+  },
+
+  /** Mirror configured docked panels into the keyboard-open control surface. */
+  syncPanelButtons() {
+    const group = this.element?.querySelector('.accessory-panel-controls');
+    if (!(group instanceof HTMLElement)) return;
+
+    const settings = typeof app !== 'undefined' ? app.loadAppSettingsFromStorage?.() || {} : {};
+    const defaults = typeof app !== 'undefined' ? app.getDefaultSettings?.() || {} : {};
+    let hasAvailablePanel = false;
+
+    for (const [key, config] of Object.entries(MOBILE_ACCESSORY_PANELS)) {
+      const button = group.querySelector(`[data-action="panel-${key}"]`);
+      if (!(button instanceof HTMLButtonElement)) continue;
+      const configured = settings[config.settingKey] ?? defaults[config.settingKey] ?? false;
+      const panel = document.getElementById(config.elementId);
+      const expanded = Boolean(
+        panel?.classList.contains('open') &&
+          !panel.classList.contains('hidden') &&
+          panel.style.display !== 'none'
+      );
+      const available = Boolean(configured || expanded);
+      button.hidden = !available;
+      button.classList.toggle('active', expanded);
+      button.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+      const actionLabel = `${expanded ? 'Collapse' : 'Open'} ${config.label} panel`;
+      button.setAttribute('aria-label', actionLabel);
+      button.title = actionLabel;
+      hasAvailablePanel ||= available;
+    }
+
+    group.hidden = !hasAvailablePanel;
   },
 
   _confirmTimer: null,
@@ -549,6 +630,11 @@ const KeyboardAccessoryBar = {
         break;
       case 'clear-input':
         app.clearTerminalInput?.();
+        break;
+      case 'panel-monitor':
+      case 'panel-subagents':
+      case 'panel-ultracode':
+        MobileTerminalControls.togglePanel(action.slice('panel-'.length));
         break;
       case 'dismiss':
         // Blur active element to dismiss keyboard
@@ -1083,7 +1169,7 @@ const MobileTerminalControls = {
   hapticsEnabled: true,
   soundEnabled: false,
   _audioContext: null,
-  _modalObserver: null,
+  _visibilityObserver: null,
 
   /**
    * Resolve the canonical per-device setting while preserving both shipped
@@ -1110,7 +1196,7 @@ const MobileTerminalControls = {
   init(enabled = false) {
     KeyboardAccessoryBar.init();
     MobileNavigationPad.init(false);
-    this._installModalObserver();
+    this._installVisibilityObserver();
     this.setEnabled(enabled);
   },
 
@@ -1130,6 +1216,42 @@ const MobileTerminalControls = {
   syncVisibility() {
     KeyboardAccessoryBar.syncVisibility();
     MobileNavigationPad.syncVisibility();
+  },
+
+  /**
+   * Toggle one configured docked panel while keeping the keyboard-open layout
+   * single-panel. Existing app methods retain ownership of panel side effects.
+   */
+  togglePanel(key) {
+    const config = MOBILE_ACCESSORY_PANELS[key];
+    const panel = config ? document.getElementById(config.elementId) : null;
+    const toggle = config && typeof app !== 'undefined' ? app[config.toggleMethod] : null;
+    if (!panel || typeof toggle !== 'function') return;
+
+    const opening =
+      !panel.classList.contains('open') ||
+      panel.classList.contains('hidden') ||
+      panel.style.display === 'none';
+    if (opening) {
+      for (const [otherKey, otherConfig] of Object.entries(MOBILE_ACCESSORY_PANELS)) {
+        if (otherKey === key) continue;
+        const otherPanel = document.getElementById(otherConfig.elementId);
+        const otherToggle = typeof app !== 'undefined' ? app[otherConfig.toggleMethod] : null;
+        if (otherPanel?.classList.contains('open') && typeof otherToggle === 'function') {
+          Promise.resolve(otherToggle.call(app)).catch(() => {});
+        }
+      }
+    }
+
+    Promise.resolve(toggle.call(app))
+      .catch(() => {})
+      .finally(() => {
+        KeyboardAccessoryBar.syncPanelButtons();
+        if (typeof KeyboardHandler !== 'undefined') {
+          KeyboardHandler.onPanelLayoutChange?.();
+        }
+      });
+    KeyboardAccessoryBar.syncPanelButtons();
   },
 
   blurTerminalInput() {
@@ -1215,31 +1337,33 @@ const MobileTerminalControls = {
     });
   },
 
-  _installModalObserver() {
+  _installVisibilityObserver() {
     if (
-      this._modalObserver ||
+      this._visibilityObserver ||
       typeof MobileDetection === 'undefined' ||
       !MobileDetection.isTouchDevice()
     ) {
       return;
     }
-    this._modalObserver = new MutationObserver((mutations) => {
+    this._visibilityObserver = new MutationObserver((mutations) => {
       if (
         mutations.some(
           (mutation) =>
             mutation.target.classList?.contains('modal') ||
+            mutation.target.matches?.('.monitor-panel, .subagents-panel') ||
             (mutation.type === 'childList' &&
               [...mutation.addedNodes, ...mutation.removedNodes].some(
                 (node) =>
                   node.nodeType === Node.ELEMENT_NODE &&
-                  (node.matches?.('.modal') || node.querySelector?.('.modal'))
+                  (node.matches?.('.modal, .monitor-panel, .subagents-panel') ||
+                    node.querySelector?.('.modal, .monitor-panel, .subagents-panel'))
               ))
         )
       ) {
         this.syncVisibility();
       }
     });
-    this._modalObserver.observe(document.body, {
+    this._visibilityObserver.observe(document.body, {
       subtree: true,
       childList: true,
       attributes: true,
@@ -1248,8 +1372,8 @@ const MobileTerminalControls = {
   },
 
   cleanup() {
-    this._modalObserver?.disconnect();
-    this._modalObserver = null;
+    this._visibilityObserver?.disconnect();
+    this._visibilityObserver = null;
     MobileNavigationPad.cleanup();
     KeyboardAccessoryBar.clearConfirm();
     KeyboardAccessoryBar.element?.remove();

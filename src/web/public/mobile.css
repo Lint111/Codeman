@@ -622,27 +622,36 @@ html.mobile-init .file-browser-panel {
 
   /* Gear icon on active tab - tiny, subtle */
   .session-tab.active .tab-gear {
+    position: static;
     display: inline-flex;
     align-items: center;
     justify-content: center;
+    flex: 0 0 32px;
     font-size: 0.65rem;
     line-height: 1;
     width: 32px;
     height: 32px;
     margin-left: auto;
     opacity: 0.6;
+    pointer-events: auto;
+    transform: none;
   }
 
   /* Close button on active tab - large for easy tapping */
   .session-tab.active .tab-close {
+    position: static;
     display: inline-flex;
     align-items: center;
     justify-content: center;
+    flex: 0 0 20px;
     font-size: 1.1rem;
     line-height: 1;
     width: 20px;
     height: 18px;
     margin-left: -2px;
+    opacity: 1;
+    pointer-events: auto;
+    transform: none;
   }
 
   /* Clean dark toolbar - positioned near bottom */
@@ -2398,9 +2407,39 @@ html.mobile-init .file-browser-panel {
     justify-content: center;
   }
 
+  .subagent-window-transcript-controls {
+    min-height: 24px;
+    padding: 1px 4px;
+  }
+
+  .subagent-window-transcript-controls button {
+    flex: 1 1 0;
+    min-width: 0;
+    min-height: 22px;
+    padding: 2px 4px;
+    font-size: 0.55rem;
+  }
+
   .subagent-window-body {
     font-size: 0.6rem;
     padding: 0.2rem 0.35rem;
+  }
+
+  .subagent-window-transcript-pane {
+    padding: 0.25rem 0.35rem;
+    font-size: 0.58rem;
+  }
+
+  .subagent-window-transcript-footer {
+    min-height: 22px;
+    padding: 1px 4px;
+    font-size: 0.5rem;
+  }
+
+  .subagent-window-transcript-footer [data-role='latest'] {
+    min-height: 20px;
+    padding: 1px 5px;
+    font-size: 0.5rem;
   }
 
   .subagent-window-body .activity-line {

@@ -547,6 +547,17 @@ const KeyboardHandler = {
     }
   },
 
+  /** Refit once after a docked mobile panel enters or leaves the app flex layout. */
+  onPanelLayoutChange() {
+    if (!this.keyboardVisible) return;
+    requestAnimationFrame(() => {
+      this.updateLayoutForKeyboard();
+      this._scheduleViewportSettle({
+        focusInput: this._terminalInputRequested,
+      });
+    });
+  },
+
   /** Clear stale mobile keyboard state before a non-touch viewport measures xterm. */
   resetForDesktopViewport() {
     if (MobileDetection.isTouchDevice()) return;

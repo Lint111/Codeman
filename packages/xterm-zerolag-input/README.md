@@ -246,6 +246,7 @@ Finds text that exists after the prompt but was never typed through the overlay.
 | `rerender()`                | Force re-render. Call after buffer reloads, screen redraws, resizes, reconnects.                |
 | `refreshFont()`             | Re-cache font and color properties from terminal. Call after font size or theme changes.        |
 | `setViewportPinned(pinned)` | Keep a pending draft visible at the bottom while xterm scrollback is away from the live prompt. |
+| `containsClientPoint(x, y)` | Return whether a viewport point is inside any currently rendered draft row.                     |
 
 ### Prompt
 

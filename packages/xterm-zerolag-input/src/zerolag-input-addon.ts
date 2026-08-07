@@ -385,6 +385,35 @@ export class ZerolagInputAddon implements XtermAddon {
   }
 
   /**
+   * Whether a viewport point falls inside any currently rendered draft row.
+   *
+   * The overlay owns soft wrapping and can shift rows above the terminal's
+   * buffer cursor as a draft grows. Consumers should use this geometry rather
+   * than inferring editable rows from xterm's cursor position.
+   */
+  containsClientPoint(clientX: number, clientY: number): boolean {
+    if (
+      !Number.isFinite(clientX) ||
+      !Number.isFinite(clientY) ||
+      !this._overlay ||
+      this._overlay.style.display === 'none' ||
+      !this.hasPending
+    ) {
+      return false;
+    }
+
+    for (const child of this._overlay.children) {
+      if (!(child instanceof HTMLElement) || child.tagName !== 'DIV') continue;
+      const rect = child.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) continue;
+      if (clientX >= rect.left && clientX < rect.right && clientY >= rect.top && clientY < rect.bottom) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
    * Re-read font properties from the terminal and re-render.
    * Call after font size changes, theme changes, etc.
    */

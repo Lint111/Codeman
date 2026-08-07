@@ -753,23 +753,32 @@ body {
 }
 
 .session-tab .tab-close {
+  position: absolute;
+  top: 50%;
+  right: 0.25rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   opacity: 0;
-  width: 0;
+  width: 1.4rem;
+  height: 1.4rem;
   padding: 0;
   font-size: 0.9rem;
   line-height: 1;
   color: var(--text-muted);
   overflow: hidden;
-  cursor: default;
+  cursor: pointer;
+  pointer-events: none;
   border-radius: 3px;
-  /* Performance: use transform for GPU acceleration */
-  transition: opacity 0.05s ease-out, width 0.05s ease-out, padding 0.05s ease-out;
+  transform: translateY(-50%);
+  transition: opacity 0.05s ease-out, color 0.05s ease-out, background 0.05s ease-out;
 }
 
-.session-tab:hover .tab-close {
+.session-tab:hover .tab-close,
+.session-tab:focus-within .tab-close {
   opacity: 1;
-  width: auto;
-  padding: 0.15rem 0.35rem;
+  pointer-events: auto;
+  background: var(--bg-card);
 }
 
 .session-tab .tab-close:hover {
@@ -1324,46 +1333,67 @@ body {
 
 /* Session tab gear icon */
 .session-tab .tab-gear {
+  position: absolute;
+  top: 50%;
+  right: calc(0.25rem + 2.8rem);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   opacity: 0;
-  width: 0;
+  width: 1.4rem;
+  height: 1.4rem;
   padding: 0;
   font-size: 1rem;
   line-height: 1;
   color: var(--text-muted);
   cursor: pointer;
   overflow: hidden;
-  transition: opacity 0.15s, width 0.15s, padding 0.15s, transform 0.2s;
+  pointer-events: none;
+  transform: translateY(-50%);
+  transition: opacity 0.15s, color 0.15s, background 0.15s, transform 0.2s;
 }
 
-.session-tab:hover .tab-gear {
+.session-tab:hover .tab-gear,
+.session-tab:focus-within .tab-gear {
   opacity: 1;
-  width: auto;
-  padding: 0 0.3rem;
+  pointer-events: auto;
+  background: var(--bg-card);
 }
 
 .session-tab .tab-gear:hover {
   color: var(--accent-hover);
-  transform: rotate(45deg);
+  background: var(--bg-hover);
+  transform: translateY(-50%) rotate(45deg);
 }
 
 /* ===== Session detach / undock (beta/session-detach) ===================== */
 
 /* Pop-out (detach) icon on each tab — mirrors .tab-gear reveal-on-hover. */
 .session-tab .tab-detach {
+  position: absolute;
+  top: 50%;
+  right: calc(0.25rem + 1.4rem);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   opacity: 0;
-  width: 0;
+  width: 1.4rem;
+  height: 1.4rem;
   padding: 0;
   font-size: 0.95rem;
   line-height: 1;
   color: var(--text-muted);
   cursor: pointer;
   overflow: hidden;
-  transition: opacity 0.15s, width 0.15s, padding 0.15s;
+  pointer-events: none;
+  transform: translateY(-50%);
+  transition: opacity 0.15s, color 0.15s, background 0.15s;
 }
-.session-tab:hover .tab-detach {
+.session-tab:hover .tab-detach,
+.session-tab:focus-within .tab-detach {
   opacity: 1;
-  width: auto;
-  padding: 0 0.3rem;
+  pointer-events: auto;
+  background: var(--bg-card);
 }
 .session-tab .tab-detach:hover {
   color: var(--accent-hover);
@@ -1378,8 +1408,7 @@ body {
 .session-tab.detached .tab-detach {
   /* Keep the pop-out icon visible while detached as a re-focus affordance. */
   opacity: 1;
-  width: auto;
-  padding: 0 0.3rem;
+  pointer-events: auto;
   color: var(--accent-hover);
 }
 .session-tab .tab-detached-badge {
@@ -7924,6 +7953,14 @@ kbd {
   color: var(--text);
 }
 
+.subagent-header .subagent-id {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .subagent-status {
   font-size: 0.6rem;
   padding: 0.1rem 0.3rem;
@@ -8081,7 +8118,7 @@ kbd {
   border-radius: 4px;
   font-weight: 600;
   text-transform: uppercase;
-  letter-spacing: 0.3px;
+  letter-spacing: 0;
 }
 
 .subagent-model-badge.haiku {
@@ -8097,6 +8134,11 @@ kbd {
 .subagent-model-badge.opus {
   background: #c084fc;
   color: #3b0764;
+}
+
+.subagent-model-badge.codex {
+  background: #10a37f;
+  color: #041f18;
 }
 
 /* Hook events */
@@ -8204,10 +8246,13 @@ kbd {
 .subagent-window-header {
   display: flex;
   align-items: center;
+  flex: 0 0 auto;
   padding: 0.5rem 0.75rem;
   background: var(--bg-input);
   border-bottom: 1px solid var(--border);
   cursor: move;
+  position: relative;
+  z-index: 3;
 }
 
 .subagent-window-title {
@@ -8266,6 +8311,63 @@ kbd {
   color: var(--text);
 }
 
+.subagent-window-transcript-controls {
+  position: relative;
+  z-index: 3;
+  display: flex;
+  flex: 0 0 auto;
+  min-height: 32px;
+  align-items: center;
+  justify-content: center;
+  padding: 3px 8px;
+  background: var(--bg-input);
+  border-bottom: 1px solid var(--border);
+  isolation: isolate;
+}
+
+.subagent-window-transcript-controls button {
+  min-width: 66px;
+  min-height: 24px;
+  border: 1px solid var(--control-border);
+  border-radius: 0;
+  padding: 3px 8px;
+  background: var(--control-bg);
+  color: var(--text-muted);
+  font-size: 0.65rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.subagent-window-transcript-controls button:first-child {
+  border-radius: 4px 0 0 4px;
+}
+
+.subagent-window-transcript-controls button + button {
+  border-left: 0;
+}
+
+.subagent-window-transcript-controls button:last-child {
+  border-radius: 0 4px 4px 0;
+}
+
+.subagent-window-transcript-controls button:hover,
+.subagent-window-transcript-controls button:focus-visible {
+  background: var(--control-bg-hover);
+  color: var(--text);
+  outline: none;
+}
+
+.subagent-window-transcript-controls button.active {
+  background: var(--accent);
+  color: var(--text-on-accent, #fff);
+}
+
+.subagent-window-transcript-controls .subagent-browser-tab-btn {
+  min-width: 34px;
+  padding-inline: 7px;
+  font-size: 0.85rem;
+}
+
 .subagent-window-body {
   flex: 1;
   overflow-y: auto;
@@ -8277,6 +8379,58 @@ kbd {
   color: var(--text);
   min-height: 0; /* Allow flex child to shrink below content size */
   scroll-behavior: smooth;
+}
+
+.subagent-window-transcript-pane {
+  position: relative;
+  z-index: 1;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  padding: 0.5rem;
+  background: var(--bg-dark);
+  touch-action: pan-y;
+}
+
+.subagent-window-transcript-pane[hidden],
+.subagent-window-activity-pane[hidden],
+.subagent-window-transcript-footer[hidden] {
+  display: none !important;
+}
+
+.subagent-window-transcript-footer {
+  position: relative;
+  z-index: 3;
+  display: flex;
+  flex: 0 0 auto;
+  min-height: 30px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 3px 8px;
+  border-top: 1px solid var(--border);
+  background: var(--bg-input);
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+}
+
+.subagent-window-transcript-footer [data-role='latest'] {
+  min-height: 24px;
+  border: 1px solid var(--control-border);
+  border-radius: 4px;
+  padding: 2px 8px;
+  background: var(--control-bg);
+  color: var(--text);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.subagent-window-transcript-footer [data-role='latest'][hidden] {
+  display: none;
 }
 
 /* Custom scrollbar for subagent window body */
@@ -10888,14 +11042,495 @@ kbd {
   border-color: #38bdf8;
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.45), 0 0 0 1px rgba(56, 189, 248, 0.18);
 }
+.ultracode-agent-window .uw-transcript-controls {
+  display: flex;
+  justify-content: center;
+  min-height: 34px;
+  padding: 3px 8px;
+  background: var(--bg-input);
+  border-bottom: 1px solid var(--border);
+}
+.ultracode-agent-window .uw-transcript-controls button {
+  min-width: 72px;
+  border: 1px solid var(--control-border);
+  padding: 3px 10px;
+  background: var(--control-bg);
+  color: var(--text-muted);
+  font-size: 0.7rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+.ultracode-agent-window .uw-transcript-controls button:first-child {
+  border-radius: 4px 0 0 4px;
+}
+.ultracode-agent-window .uw-transcript-controls button:last-child {
+  border-left: 0;
+  border-radius: 0 4px 4px 0;
+}
+.ultracode-agent-window .uw-transcript-controls button.active {
+  background: var(--accent);
+  color: var(--text-on-accent, #fff);
+}
+.ultracode-agent-window .uw-transcript-controls .uw-external {
+  min-width: 34px;
+  padding-inline: 7px;
+  font-size: 0.85rem;
+}
+.ultracode-agent-window .ultracode-window-body {
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
 .ultracode-agent-window .ultracode-window-body .uw-transcript {
   margin: 0;
-  white-space: pre-wrap;
+  white-space: normal;
   word-break: break-word;
   font-family: var(--font-mono);
   font-size: 0.68rem;
   line-height: 1.45;
   color: var(--text);
+}
+
+/* Structured agent transcript shared by ordinary and tracked workflow-agent
+   in-page windows. Each block owns one semantic unit; live refreshes
+   replace block markup while preserving open <details> ids and scroll policy. */
+.subagent-transcript-content {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  white-space: normal;
+  color: var(--text);
+  font-family: var(--font-mono);
+}
+
+.sat-message {
+  min-width: 0;
+  padding: 10px 12px;
+  border-left: 3px solid var(--green);
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--green) 5%, var(--bg-card));
+}
+
+.sat-message-user {
+  border-left-color: var(--accent);
+  background: rgba(var(--accent-rgb), 0.06);
+}
+
+.sat-message-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 7px;
+  color: var(--green);
+  font: 700 0.64rem/1.2 var(--font-mono);
+  text-transform: uppercase;
+}
+
+.sat-message-user .sat-message-header {
+  color: var(--accent-hover);
+}
+
+.sat-message-header time,
+.sat-tool summary time,
+.sat-progress time {
+  color: var(--text-muted);
+  font-size: 0.62rem;
+  font-weight: 400;
+  text-transform: none;
+}
+
+.sat-markdown {
+  min-width: 0;
+  color: var(--text);
+  font-family: var(--font-body, system-ui, sans-serif);
+  font-size: 0.79rem;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.sat-markdown > :first-child {
+  margin-top: 0;
+}
+
+.sat-markdown > :last-child {
+  margin-bottom: 0;
+}
+
+.sat-markdown h1,
+.sat-markdown h2,
+.sat-markdown h3,
+.sat-markdown h4 {
+  margin: 0.8em 0 0.4em;
+  color: var(--text);
+  font-size: 0.92rem;
+  line-height: 1.35;
+}
+
+.sat-tool {
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--bg-card);
+  overflow: hidden;
+}
+
+.sat-tool-error {
+  border-color: color-mix(in srgb, var(--red) 55%, var(--border));
+}
+
+.sat-tool > summary {
+  min-height: 34px;
+  padding: 8px 10px;
+  color: var(--text-dim);
+  cursor: pointer;
+  font: 600 0.7rem/1.35 var(--font-mono);
+  user-select: none;
+}
+
+.sat-tool > summary:hover,
+.sat-tool > summary:focus-visible {
+  background: var(--control-bg-hover);
+  color: var(--text);
+  outline: none;
+}
+
+.sat-tool-name {
+  margin-right: 8px;
+  color: var(--text);
+}
+
+.sat-tool-summary {
+  display: inline-block;
+  max-width: min(48ch, 55%);
+  overflow: hidden;
+  color: var(--text-muted);
+  text-overflow: ellipsis;
+  vertical-align: bottom;
+  white-space: nowrap;
+}
+
+.sat-tool-status {
+  float: right;
+  margin-left: 8px;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: var(--control-bg);
+  color: var(--text-muted);
+  font-size: 0.58rem;
+  text-transform: uppercase;
+}
+
+.sat-tool-complete .sat-tool-status {
+  color: var(--green);
+}
+
+.sat-tool-running .sat-tool-status {
+  color: var(--yellow);
+}
+
+.sat-tool-error .sat-tool-status {
+  color: var(--red);
+}
+
+.sat-tool summary time {
+  float: right;
+  margin-left: 8px;
+  line-height: 1.5;
+}
+
+.sat-tool-body {
+  border-top: 1px solid var(--border);
+}
+
+.sat-tool-section {
+  padding: 9px 10px;
+}
+
+.sat-tool-section + .sat-tool-section {
+  border-top: 1px solid var(--border);
+}
+
+.sat-tool-section h4 {
+  margin: 0 0 6px;
+  color: var(--text-muted);
+  font: 700 0.6rem/1.2 var(--font-mono);
+  text-transform: uppercase;
+}
+
+.sat-tool-section pre {
+  max-height: 280px;
+  margin: 0;
+  padding: 8px;
+  overflow: auto;
+  border: 1px solid var(--control-border);
+  border-radius: 4px;
+  background: var(--bg-dark);
+  color: var(--text-dim);
+  font: 0.67rem/1.5 var(--font-mono);
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.sat-tool-empty,
+.sat-empty {
+  padding: 12px;
+  color: var(--text-muted);
+  font-size: 0.7rem;
+  text-align: center;
+}
+
+.sat-diff {
+  overflow: auto;
+  border: 1px solid var(--control-border);
+  border-radius: 4px;
+  background: var(--bg-dark);
+  font: 0.66rem/1.45 var(--font-mono);
+}
+
+.sat-diff-line {
+  display: grid;
+  grid-template-columns: 5ch 5ch 2ch minmax(max-content, 1fr);
+  min-width: max-content;
+}
+
+.sat-diff-line > span,
+.sat-diff-line > code {
+  min-height: 1.45em;
+  padding: 0 3px;
+  white-space: pre;
+}
+
+.sat-diff-line > code {
+  color: var(--text-dim);
+}
+
+.sat-diff-gutter {
+  border-right: 1px solid var(--control-border);
+  color: var(--text-muted);
+  text-align: right;
+  user-select: none;
+}
+
+.sat-diff-prefix {
+  color: var(--text-muted);
+  text-align: center;
+  user-select: none;
+}
+
+.sat-diff-add {
+  background: rgba(46, 160, 67, 0.15);
+}
+
+.sat-diff-add .sat-diff-prefix,
+.sat-diff-add > code {
+  color: #7ee787;
+}
+
+.sat-diff-remove {
+  background: rgba(248, 81, 73, 0.14);
+}
+
+.sat-diff-remove .sat-diff-prefix,
+.sat-diff-remove > code {
+  color: #ffa198;
+}
+
+.sat-diff-meta {
+  background: rgba(var(--accent-rgb), 0.08);
+}
+
+.sat-diff-meta > code {
+  grid-column: 4;
+  color: var(--accent-hover);
+  font-style: italic;
+}
+
+.sat-progress {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 7px;
+  min-height: 26px;
+  padding: 4px 8px;
+  border-left: 2px solid var(--control-border-hover);
+  color: var(--text-muted);
+  font: 0.64rem/1.3 var(--font-mono);
+}
+
+.sat-progress-label {
+  color: var(--text-dim);
+  font-weight: 700;
+  text-transform: capitalize;
+}
+
+.sat-progress-detail {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sat-progress-count {
+  padding: 1px 4px;
+  border-radius: 3px;
+  background: var(--control-bg);
+  color: var(--text-dim);
+}
+.ultracode-agent-window .uw-transcript-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 32px;
+  padding: 3px 8px;
+  border-top: 1px solid var(--border);
+  background: var(--bg-input);
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+}
+.ultracode-agent-window .uw-latest {
+  min-height: 26px;
+  border: 1px solid var(--control-border);
+  border-radius: 4px;
+  padding: 2px 8px;
+  background: var(--control-bg);
+  color: var(--text);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.ultracode-agent-window .uw-latest[hidden] {
+  display: none;
+}
+
+/* Standalone subagent transcript tab. It shares the semantic transcript blocks
+   above while owning only the full-page shell and navigation lifecycle. */
+body.subagent-viewer-page {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  width: 100%;
+  height: 100vh;
+  height: 100dvh;
+  margin: 0;
+  overflow: hidden;
+  background: var(--bg-dark);
+  color: var(--text);
+  font-family: var(--ui-font);
+}
+
+.subagent-viewer-header {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  min-height: 50px;
+  padding: calc(7px + var(--safe-area-top)) max(12px, var(--safe-area-right)) 7px max(12px, var(--safe-area-left));
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-card);
+}
+
+.subagent-viewer-return,
+.subagent-viewer-footer button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 34px;
+  border: 1px solid var(--control-border);
+  border-radius: 5px;
+  padding: 5px 10px;
+  background: var(--control-bg);
+  color: var(--text);
+  font: 600 0.72rem/1 var(--ui-font);
+  cursor: pointer;
+}
+
+.subagent-viewer-return:hover,
+.subagent-viewer-return:focus-visible,
+.subagent-viewer-footer button:hover,
+.subagent-viewer-footer button:focus-visible {
+  border-color: var(--control-border-hover);
+  background: var(--control-bg-hover);
+  outline: none;
+}
+
+.subagent-viewer-identity {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.subagent-viewer-identity strong,
+.subagent-viewer-identity span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.subagent-viewer-identity strong {
+  font-size: 0.82rem;
+}
+
+.subagent-viewer-identity span {
+  color: var(--text-muted);
+  font: 0.62rem/1.3 var(--font-mono);
+}
+
+.subagent-viewer-status {
+  color: var(--yellow);
+  font: 700 0.64rem/1 var(--font-mono);
+  text-transform: capitalize;
+}
+
+.subagent-viewer-status[data-status='completed'] {
+  color: var(--green);
+}
+
+.subagent-viewer-scroller {
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  padding: 14px max(14px, var(--safe-area-right)) 24px max(14px, var(--safe-area-left));
+}
+
+.subagent-viewer-scroller > .subagent-transcript-content {
+  width: min(100%, 1080px);
+  margin: 0 auto;
+}
+
+.subagent-viewer-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-height: 38px;
+  padding: 4px max(12px, var(--safe-area-right)) calc(4px + var(--safe-area-bottom)) max(12px, var(--safe-area-left));
+  border-top: 1px solid var(--border);
+  background: var(--bg-card);
+  color: var(--text-dim);
+  font: 0.62rem/1.2 var(--font-mono);
+}
+
+.subagent-viewer-footer button[hidden] {
+  display: none;
+}
+
+@media (max-width: 520px) {
+  .subagent-viewer-header {
+    gap: 8px;
+    padding-inline: max(8px, var(--safe-area-right)) max(8px, var(--safe-area-left));
+  }
+  .subagent-viewer-return {
+    padding-inline: 8px;
+  }
+  .subagent-viewer-identity span {
+    display: none;
+  }
+  .subagent-viewer-scroller {
+    padding: 10px max(8px, var(--safe-area-right)) 18px max(8px, var(--safe-area-left));
+  }
 }
 /* Distinguish the parent→agent line from the tab→run line: solid cyan, no dashes.
    Must follow .ultracode-connection (equal specificity → source order wins). */
@@ -11625,6 +12260,7 @@ body.touch-device.cjk-input-visible .main {
   position: fixed;
   left: 0;
   right: 0;
+  gap: 6px;
   transition: transform 0.15s ease-out;
   will-change: transform;
 }
@@ -11664,6 +12300,53 @@ body.handheld-device.keyboard-visible .keyboard-accessory-bar.visible {
   display: flex !important;
 }
 
+/* Keyboard-open docked panels join the app's flex layout instead of floating
+   over xterm. Their collapsed launchers live in the accessory row below. */
+body.handheld-device.keyboard-visible.keyboard-accessory-visible
+  :is(.monitor-panel, .subagents-panel):not(.open) {
+  display: none !important;
+}
+
+body.handheld-device.keyboard-visible.keyboard-accessory-visible
+  :is(.monitor-panel, .subagents-panel).open {
+  position: relative !important;
+  top: auto !important;
+  right: auto !important;
+  bottom: auto !important;
+  left: auto !important;
+  display: flex;
+  order: 1;
+  flex: 0 1 clamp(104px, 30dvh, 220px);
+  width: 100% !important;
+  min-width: 0 !important;
+  max-width: 100% !important;
+  height: clamp(104px, 30dvh, 220px) !important;
+  min-height: 84px !important;
+  max-height: clamp(104px, 30dvh, 220px) !important;
+  transform: none !important;
+  transition: none;
+  resize: none;
+  z-index: 30 !important;
+  border-right: 0;
+  border-left: 0;
+  border-radius: 0;
+}
+
+body.handheld-device.keyboard-visible.keyboard-accessory-visible
+  :is(.monitor-panel, .subagents-panel).open.hidden {
+  display: none !important;
+}
+
+body.handheld-device.keyboard-visible.keyboard-accessory-visible .main {
+  order: 2;
+  min-height: 80px;
+}
+
+body.handheld-device.keyboard-visible.keyboard-accessory-visible
+  :is(#monitorToggleBtn, #subagentsToggleBtn, #ultracodeToggleBtn) {
+  display: none !important;
+}
+
 body.touch-device.handheld-device.keyboard-visible #cjkInput.cjk-input-visible {
   position: static;
   flex-shrink: 0;
@@ -11687,6 +12370,62 @@ body.touch-device.handheld-device.keyboard-visible #cjkInput.cjk-input-visible {
   font-weight: 500;
   cursor: pointer;
   transition: background 0.15s, border-color 0.15s;
+}
+
+.accessory-panel-controls {
+  display: inline-flex;
+  flex: 0 0 auto;
+  height: 100%;
+  align-items: center;
+  gap: 6px;
+  padding-left: 6px;
+  border-left: 1px solid var(--control-border);
+}
+
+.accessory-panel-controls[hidden],
+.accessory-panel-controls .accessory-btn-panel[hidden] {
+  display: none;
+}
+
+.accessory-panel-controls .accessory-btn-panel {
+  position: relative;
+  width: 44px;
+  min-width: 44px;
+  padding: 0 11px 0 5px;
+  justify-content: flex-start;
+  color: var(--text-dim);
+  background: var(--control-bg);
+  border-color: var(--control-border);
+}
+
+.accessory-panel-controls .accessory-btn-panel::after {
+  content: '\25B2';
+  position: absolute;
+  right: 3px;
+  color: var(--text-muted);
+  font-size: 7px;
+  line-height: 1;
+}
+
+.accessory-panel-controls .accessory-btn-panel.active {
+  color: var(--accent-ink);
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.accessory-panel-controls .accessory-btn-panel.active::after {
+  content: '\25BC';
+  color: currentColor;
+}
+
+.accessory-panel-controls .accessory-btn-panel svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
 .accessory-btn.confirming {

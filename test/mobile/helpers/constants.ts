@@ -11,6 +11,7 @@ export const PORTS = {
   HEADER_BUTTONS: 3208,
   NAVIGATION_PAD: 3209,
   FILE_VIEWER: 3211,
+  SUBAGENT_TRANSCRIPT: 3212,
 } as const;
 
 // CSS Selectors
