@@ -361,6 +361,8 @@ Object.assign(CodemanApp.prototype, {
     document.getElementById('appSettingsTerminalWheelLocal').checked =
       settings.terminalWheelLocalScrollback ?? defaults.terminalWheelLocalScrollback ?? false;
     document.getElementById('appSettingsCjkInput').checked = settings.cjkInputEnabled ?? defaults.cjkInputEnabled ?? false;
+    document.getElementById('appSettingsEnterMultilineDraft').checked =
+      settings.enterMultilineDraft ?? defaults.enterMultilineDraft ?? false;
     document.getElementById('appSettingsExtendedKeyboardBar').checked = settings.extendedKeyboardBar ?? false;
     document.getElementById('appSettingsTabTwoRows').checked = settings.tabTwoRows ?? defaults.tabTwoRows ?? false;
     // Claude CLI settings
@@ -1539,6 +1541,7 @@ Object.assign(CodemanApp.prototype, {
       localEchoEnabled: document.getElementById('appSettingsLocalEcho').checked,
       terminalWheelLocalScrollback: document.getElementById('appSettingsTerminalWheelLocal').checked,
       cjkInputEnabled: document.getElementById('appSettingsCjkInput').checked,
+      enterMultilineDraft: document.getElementById('appSettingsEnterMultilineDraft').checked,
       webglRendererEnabled: document.getElementById('appSettingsWebglRenderer').checked,
       extendedKeyboardBar: document.getElementById('appSettingsExtendedKeyboardBar').checked,
       tabTwoRows: document.getElementById('appSettingsTabTwoRows').checked,
@@ -2350,7 +2353,7 @@ Object.assign(CodemanApp.prototype, {
           'showFontControls', 'showSystemStats', 'showTokenCount', 'showCost',
           'showLifecycleLog', 'showResponseViewer', 'showRedrawButton',
           'showMonitor', 'showProjectInsights', 'showFileBrowser', 'showSubagents',
-          'subagentActiveTabOnly', 'tabTwoRows', 'localEchoEnabled', 'cjkInputEnabled', 'extendedKeyboardBar',
+          'subagentActiveTabOnly', 'tabTwoRows', 'localEchoEnabled', 'cjkInputEnabled', 'enterMultilineDraft', 'extendedKeyboardBar',
           'skin', 'showPlanUsageLimits', 'showAttachmentsButton', 'showFileViewerButton', 'webglRendererEnabled',
           'language',
           'terminalWheelLocalScrollback',

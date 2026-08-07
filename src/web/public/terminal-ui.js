@@ -859,8 +859,20 @@ Object.assign(CodemanApp.prototype, {
             return;
           }
           if (/^[\r\n]+$/.test(data)) {
+            // Opt-in multi-line drafting (`enterMultilineDraft`, default OFF).
+            // With a draft open, Enter opens a new line instead of committing;
+            // a second Enter on the resulting empty line commits. Shift/Ctrl+Enter
+            // remain the explicit newline for everyone and are handled earlier.
+            //
+            // Only meaningful under local echo, which is the only mode with a
+            // client-side draft to break — without it there is nothing buffered
+            // and Enter must keep its immediate-submit contract.
+            if (this._enterMultilineDraftEnabled() && !this._shouldCommitDraftOnEnter()) {
+              this._localEchoOverlay?.appendText('\n');
+              return;
+            }
             // Enter: send full buffered text + \r to PTY in one shot
-            const text = this._localEchoOverlay?.pendingText || '';
+            const text = this._stripTrailingDraftNewline(this._localEchoOverlay?.pendingText || '');
             this._localEchoOverlay?.clear();
             // Suppress detection so PTY-echoed text isn't re-detected as user input
             this._localEchoOverlay?.suppressBufferDetection();
@@ -2040,6 +2052,53 @@ Object.assign(CodemanApp.prototype, {
   // ═══════════════════════════════════════════════════════════════
   // Terminal Rendering
   // ═══════════════════════════════════════════════════════════════
+
+  /**
+   * Whether opt-in multi-line drafting is active for the current session.
+   *
+   * Requires local echo: that is the only mode with a client-side draft buffer
+   * to insert a line break into. Without it nothing is buffered locally, so
+   * Enter must keep submitting immediately — the contract every CLI expects.
+   */
+  _enterMultilineDraftEnabled() {
+    if (this._localEchoEnabled !== true) return false;
+    // Read through the same per-device storage path the other input settings
+    // use; cached per keystroke burst so Enter does not hit localStorage on
+    // every press.
+    const now = Date.now();
+    if (!this._enterDraftSettingAt || now - this._enterDraftSettingAt > 1000) {
+      this._enterDraftSetting = this.loadAppSettingsFromStorage?.()?.enterMultilineDraft === true;
+      this._enterDraftSettingAt = now;
+    }
+    return this._enterDraftSetting === true;
+  },
+
+  /**
+   * Whether THIS Enter should commit rather than open another line.
+   *
+   * Commits when the draft is empty (nothing to break) or already ends in a
+   * newline (the caret sits on a fresh empty line, which is the documented
+   * second-Enter gesture). An in-flight IME composition never commits: the
+   * user is still assembling the current line, and a trailing newline would
+   * otherwise be read as the commit signal.
+   */
+  _shouldCommitDraftOnEnter() {
+    const overlay = this._localEchoOverlay;
+    if (overlay?.compositionText) return false;
+    const pending = overlay?.pendingText || '';
+    return pending === '' || pending.endsWith('\n');
+  },
+
+  /**
+   * Drop the trailing newline the FIRST Enter inserted, so the agent receives
+   * the typed text plus one carriage return rather than a stray blank line.
+   * The newline only ever existed in the un-sent overlay draft, so nothing
+   * needs to be retracted from the PTY.
+   */
+  _stripTrailingDraftNewline(text) {
+    if (!this._enterMultilineDraftEnabled()) return text;
+    return text.endsWith('\n') ? text.slice(0, -1) : text;
+  },
 
   /**
    * Check if terminal viewport is at or near the bottom.
