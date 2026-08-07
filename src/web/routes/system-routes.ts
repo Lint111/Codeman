@@ -28,6 +28,7 @@ import {
   RevokeSessionSchema,
 } from '../schemas.js';
 import { subagentWatcher } from '../../subagent-watcher.js';
+import { buildSubagentTranscriptBlocks } from '../../subagent-transcript-blocks.js';
 import { imageWatcher } from '../../image-watcher.js';
 import { workflowRunWatcher } from '../../workflow-run-watcher.js';
 import { applyStatusLineConfig } from '../../hooks-config.js';
@@ -939,13 +940,28 @@ export function registerSystemRoutes(
     // (no-op allow-all in single-user mode).
     if (isMultiUserMode() && !requireAdmin(req, reply)) return;
     const { agentId } = req.params as { agentId: string };
-    const { limit, format } = req.query as { limit?: string; format?: 'raw' | 'formatted' };
+    const { limit, format } = req.query as { limit?: string; format?: 'raw' | 'formatted' | 'blocks' };
     const limitNum = limit ? parseInt(limit, 10) : undefined;
     const transcript = await subagentWatcher.getTranscript(agentId, limitNum);
+    const totalEntryCount = Math.max(transcript.length, Number(subagentWatcher.getSubagent(agentId)?.entryCount) || 0);
 
     if (format === 'formatted') {
       const formatted = subagentWatcher.formatTranscript(transcript);
-      return { success: true, data: { formatted, entryCount: transcript.length } };
+      return {
+        success: true,
+        data: { formatted, entryCount: transcript.length, totalEntryCount },
+      };
+    }
+
+    if (format === 'blocks') {
+      return {
+        success: true,
+        data: {
+          blocks: buildSubagentTranscriptBlocks(transcript),
+          entryCount: transcript.length,
+          totalEntryCount,
+        },
+      };
     }
 
     return { success: true, data: transcript };

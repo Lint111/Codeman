@@ -73,7 +73,7 @@ When auto-accept is about to trigger, the AI Plan Checker (`src/ai-plan-checker.
 - **Cooldown**: 30s after NOT_PLAN_MODE verdict
 - **Error handling**: 3 consecutive errors disables the checker
 
-Uses temp file for prompt to avoid E2BIG errors with large terminal buffers.
+Uses temp files for the prompt and captured output to avoid E2BIG errors with large terminal buffers. Claude stdout and stderr are captured separately: only stdout is parsed as a verdict, while bounded stderr is included when the checker produces no valid verdict.
 
 ## Test Documentation
 

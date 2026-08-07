@@ -359,13 +359,17 @@ The live file‑tail SSE route (`FileStreamManager`, used to stream a growing lo
 into the UI) does **not** use `validateSessionFilePath`; it has its own validator
 with a deliberately **wider** allowlist: the session `workingDir` **plus two
 read‑only log roots — `/var/log` and `~/logs`** — so operators can tail
-system/app logs. `/tmp` is intentionally excluded (world‑writable). Like the
-other routes it `realpath`s the target and re‑checks right before spawning `tail`
-(TOCTOU guard), and it is read‑only. This is the one place the per‑session
-boundary is intentionally relaxed; on a password‑protected remote deployment an
-authenticated user can therefore read `/var/log` and `~/logs` outside their
-session dir. (Security review M5: this divergence is by design and is now
-documented here rather than silently diverging from the per‑session claim above.)
+system/app logs. Arbitrary `/tmp` paths remain excluded because the directory is
+world‑writable. The route may authorize one additional request-scoped root for a
+Claude scratchpad under `/tmp/claude-<uid>` only when its encoded project and
+conversation match the selected session. Like the other routes it `realpath`s
+the target and re‑checks right before spawning `tail` (TOCTOU guard), and it is
+read‑only. This is the one place the per‑session boundary is intentionally
+relaxed; on a password‑protected remote deployment an authenticated user can
+therefore read `/var/log`, `~/logs`, and the selected session's verified Claude
+scratchpad outside its working directory. (Security review M5: this divergence
+is by design and is now documented here rather than silently diverging from the
+per‑session claim above.)
 
 ### Known limitation — `workingDir` scope
 

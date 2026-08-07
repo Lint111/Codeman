@@ -118,6 +118,7 @@ describe('system-routes', () => {
     mockedExistsSync.mockReturnValue(true);
     mockedReaddirSync.mockReturnValue([]);
     mockedSubagentWatcher.getSubagents.mockReturnValue([]);
+    mockedSubagentWatcher.getSubagent.mockReturnValue(null);
     mockedSubagentWatcher.getStats.mockReturnValue({
       totalAgents: 0,
       activeAgents: 0,
@@ -997,6 +998,7 @@ describe('system-routes', () => {
     it('returns formatted transcript when format=formatted', async () => {
       const transcript = [{ role: 'assistant', content: 'hello' }];
       mockedSubagentWatcher.getTranscript.mockResolvedValue(transcript as never);
+      mockedSubagentWatcher.getSubagent.mockReturnValue({ entryCount: 320 } as never);
       mockedSubagentWatcher.formatTranscript.mockReturnValue('## Formatted\nhello');
 
       const res = await harness.app.inject({
@@ -1008,6 +1010,33 @@ describe('system-routes', () => {
       expect(body.success).toBe(true);
       expect(body.data.formatted).toBe('## Formatted\nhello');
       expect(body.data.entryCount).toBe(1);
+      expect(body.data.totalEntryCount).toBe(320);
+    });
+
+    it('returns provider-neutral semantic blocks when format=blocks', async () => {
+      const transcript = [
+        {
+          type: 'assistant',
+          timestamp: '2026-08-02T10:30:00.000Z',
+          agentId: 'agent-1',
+          sessionId: 'session-1',
+          message: { role: 'assistant', content: '**Complete**' },
+        },
+      ];
+      mockedSubagentWatcher.getTranscript.mockResolvedValue(transcript as never);
+      mockedSubagentWatcher.getSubagent.mockReturnValue({ entryCount: 320 } as never);
+
+      const res = await harness.app.inject({
+        method: 'GET',
+        url: '/api/subagents/agent-1/transcript?format=blocks',
+      });
+      expect(res.statusCode).toBe(200);
+      const body = JSON.parse(res.body);
+      expect(body.data.entryCount).toBe(1);
+      expect(body.data.totalEntryCount).toBe(320);
+      expect(body.data.blocks).toEqual([
+        expect.objectContaining({ kind: 'message', role: 'assistant', markdown: '**Complete**' }),
+      ]);
     });
 
     it('passes limit parameter', async () => {

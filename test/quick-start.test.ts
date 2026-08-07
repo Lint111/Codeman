@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
 import type { WebServer } from '../src/web/server.js';
-import { existsSync, rmSync, mkdirSync, mkdtempSync } from 'node:fs';
+import { existsSync, rmSync, mkdirSync, mkdtempSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -94,6 +94,10 @@ describe('Quick Start API', () => {
       expect(data.data.caseName).toBe(testCaseName);
       // Case should exist but CLAUDE.md won't be created since case already exists
       expect(existsSync(casePath)).toBe(true);
+      const settingsPath = join(casePath, '.claude', 'settings.local.json');
+      expect(existsSync(settingsPath)).toBe(true);
+      const settings = JSON.parse(readFileSync(settingsPath, 'utf8'));
+      expect(JSON.stringify(settings.hooks)).toContain('CODEMAN_BACKGROUND_REWAKE_V2');
     });
 
     it('should reject invalid case names with special characters', async () => {

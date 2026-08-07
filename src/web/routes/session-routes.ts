@@ -63,6 +63,7 @@ import { canUsernameRunPrivilegedCommands, resolveClaudeModeForUsername } from '
 import { isMultiUserMode } from '../../config/multiuser.js';
 import { AUTH_COOKIE_NAME } from '../middleware/auth.js';
 import {
+  ensureCodemanHooks,
   writeHooksConfig,
   updateCaseModel,
   stripCaseEnvKeys,
@@ -2310,7 +2311,7 @@ export function registerSessionRoutes(
 
         // Write .claude/settings.local.json with hooks for desktop notifications
         // (Claude-specific — OpenCode, Codex, and Gemini use their own systems)
-        if (mode !== 'opencode' && mode !== 'codex' && mode !== 'gemini') {
+        if (mode === 'claude') {
           await writeHooksConfig(resolvedCasePath);
         }
 
@@ -2318,29 +2319,24 @@ export function registerSessionRoutes(
       } catch (err) {
         return createErrorResponse(ApiErrorCode.OPERATION_FAILED, `Failed to create case: ${getErrorMessage(err)}`);
       }
-    } else if (!remote && !docker && mode !== 'opencode') {
-      // COD-91 self-heal for an EXISTING case: refresh a pre-secret hooks block so the
-      // now-unconditional hook-secret gate keeps accepting its hook events. No-op when
-      // the hooks aren't ours or already carry the secret. Skipped for remote cases —
-      // resolvedCasePath is a REMOTE path that doesn't exist on the local filesystem.
-      await refreshStaleCodemanHooks(resolvedCasePath).catch(() => {});
+    } else if (!remote && !docker && mode === 'claude') {
+      // Existing local and linked cases are explicitly Codeman-managed workspaces.
+      // Merge the current handlers without replacing user hooks; this is what makes
+      // passive wakeup available in real linked repositories as well as fresh cases.
+      await ensureCodemanHooks(resolvedCasePath).catch(() => {});
     }
 
     // Docker cases: the workspace is a REAL host dir bind-mounted into the container.
     // Scaffold hooks (+ a CLAUDE.md) if MISSING so in-container permission prompts and
     // hook-idle detection fire (decision: wire hooks now). Never clobbers an existing
     // configured project. Skipped for external CLIs (they use their own systems).
-    if (docker && docker.hooksEnabled && mode !== 'opencode' && mode !== 'codex' && mode !== 'gemini') {
+    if (docker && docker.hooksEnabled && mode === 'claude') {
       try {
         if (!existsSync(join(resolvedCasePath, 'CLAUDE.md'))) {
           const templatePath = await ctx.getDefaultClaudeMdPath();
           writeFileSync(join(resolvedCasePath, 'CLAUDE.md'), generateClaudeMd(caseName, '', templatePath));
         }
-        if (!existsSync(join(resolvedCasePath, '.claude', 'settings.local.json'))) {
-          await writeHooksConfig(resolvedCasePath);
-        } else {
-          await refreshStaleCodemanHooks(resolvedCasePath).catch(() => {});
-        }
+        await ensureCodemanHooks(resolvedCasePath);
       } catch {
         /* non-fatal — the session still runs, hooks may be degraded */
       }
