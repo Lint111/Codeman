@@ -134,24 +134,18 @@ Object.assign(CodemanApp.prototype, {
   // Phase 4: fetch an agent's live transcript by agentId. The workflow agent's
   // agentId is byte-identical to the agent-<id>.jsonl stem already tracked by
   // subagent-watcher, so we reuse the existing transcript route — no watcher edits.
-  // Returns { formatted: string[], entryCount } or null when nothing is available
+  // Returns a bounded newest-first transcript tail or null when nothing is available.
   // (queued / aged out of tracking / tracking disabled). Rendering into a connected
-  // in-page floating window lives in ultracode-windows.js (openUltracodeAgentWindow) —
-  // we no longer spawn a detached browser popup.
-  async _fetchWorkflowAgentTranscript(agentId) {
+  // in-page floating window lives in ultracode-windows.js. A separate browser tab
+  // is an explicit secondary action and uses the same normalized endpoint.
+  async _fetchWorkflowAgentTranscript(agentId, limit = SUBAGENT_TRANSCRIPT_STREAM_LIMIT, signal) {
     if (!agentId) return null;
-    let data = null;
     try {
-      const res = await fetch(`/api/subagents/${encodeURIComponent(agentId)}/transcript?format=formatted`);
-      data = await res.json();
+      const data = await this._fetchSubagentTranscript(agentId, limit, signal);
+      return data.entryCount ? data : null;
     } catch {
-      data = null;
+      return null;
     }
-    const ok = data && data.success && data.data;
-    const formatted = ok ? data.data.formatted : null;
-    const entryCount = ok ? data.data.entryCount || 0 : 0;
-    if (!formatted || !entryCount) return null;
-    return { formatted, entryCount };
   },
 
   // ----- Render (debounced) -----

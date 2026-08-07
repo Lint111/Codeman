@@ -39,6 +39,8 @@ import { PENDING_TOOL_CALL_TTL_MS, MAX_PENDING_TOOL_CALLS, MAX_TRACKED_AGENTS } 
 import { STALE_DATA_MAX_AGE_MS } from './config/server-timing.js';
 import { FILE_PEEK_BYTES } from './config/buffer-limits.js';
 import { CleanupManager, KeyedDebouncer } from './utils/index.js';
+import { CompositeSubagentWatcher } from './composite-subagent-watcher.js';
+import { codexDispatchWatcher } from './codex-dispatch-watcher.js';
 
 // ========== Types ==========
 
@@ -55,11 +57,15 @@ export interface SubagentInfo {
   fileSize: number;
   description?: string; // Task description from first user message
   model?: string; // Full model name (e.g., "claude-sonnet-4-20250514")
-  modelShort?: 'haiku' | 'sonnet' | 'opus'; // Short model identifier
+  modelShort?: 'haiku' | 'sonnet' | 'opus' | 'codex'; // Short model/provider identifier
   totalInputTokens?: number; // Running total of input tokens
   totalOutputTokens?: number; // Running total of output tokens
   pid?: number; // Cached process ID for fast liveness checks
   workingDir?: string; // Provider-reported workspace for file/repository browsing
+  provider?: 'claude' | 'codex' | 'opencode' | 'gemini' | string;
+  source?: 'native' | 'script' | string;
+  providerSessionId?: string; // Provider-native worker/thread identity
+  canKill?: boolean; // False when the source cannot safely identify the worker process
 }
 
 export interface SubagentToolCall {
@@ -1852,4 +1858,5 @@ export class SubagentWatcher extends EventEmitter {
 }
 
 // Export singleton instance
-export const subagentWatcher = new SubagentWatcher();
+export const claudeSubagentWatcher = new SubagentWatcher();
+export const subagentWatcher = new CompositeSubagentWatcher([claudeSubagentWatcher, codexDispatchWatcher]);

@@ -15,6 +15,7 @@
  *
  * Reuses, rather than duplicates:
  *  - `makeWindowDraggable` + the shared `#connectionLines` SVG (subagent-windows.js)
+ *  - `SubagentTranscriptView` for semantic message, tool, and diff rendering
  *  - `_workflowAgentCardHtml`, `_fmtNum`, `_workflowStatusClass`, `_fetchWorkflowRunDetail`,
  *    and the `workflowRuns` / `workflowRunDetails` maps (ultracode-panel.js)
  *
@@ -460,6 +461,7 @@ Object.assign(CodemanApp.prototype, {
 
     const element = info.element;
     const dragListeners = info.dragListeners;
+    this._disposeUltracodeAgentTranscriptState(info);
     this._animateUltracodeWindowToTab(element, parentSessionId, () => {
       this._teardownUltracodeDrag(dragListeners);
       if (element) element.remove();
@@ -522,13 +524,90 @@ Object.assign(CodemanApp.prototype, {
 
   // ── Agent-transcript windows ────────────────────────────────────────────────
   // Clicking an agent card (in a run window OR the dock panel) opens the agent's
-  // live transcript as its OWN in-page floating window, line-tied to its parent run
-  // window (or the run's session tab when that window is closed). Replaces the old
-  // detached `window.open` browser popup so the transcript stays inside the same
-  // draggable, connector-line floating-window system as the run windows.
+  // transcript as its OWN in-page floating window, line-tied to its parent run
+  // window (or the run's session tab when that window is closed). Scrolling up
+  // implicitly pages older history; returning to the bottom resumes live follow.
+
+  _isUltracodeAgentActive(agentId, runId) {
+    const tracked = this.subagents && this.subagents.get(agentId);
+    const trackedStatus = String((tracked && tracked.status) || '');
+    if (trackedStatus === 'completed') return false;
+
+    const detail = this.workflowRunDetails && runId ? this.workflowRunDetails.get(runId) : null;
+    const workflowAgent =
+      detail && Array.isArray(detail.agents) ? detail.agents.find((agent) => agent.agentId === agentId) : null;
+    const state = String((workflowAgent && workflowAgent.state) || '');
+    if (state === 'done' || state === 'completed' || state === 'failed') return false;
+    if (trackedStatus === 'active' || trackedStatus === 'idle') return true;
+    if (state === 'start' || state === 'progress') return true;
+
+    const summary = this.workflowRuns && runId ? this.workflowRuns.get(runId) : null;
+    return summary ? this._isWorkflowRunActive(summary) : true;
+  },
+
+  _disposeUltracodeAgentTranscriptState(info) {
+    if (!info) return;
+    info.requestId += 1;
+    if (info.pollTimer) clearInterval(info.pollTimer);
+    if (info.refreshTimer) clearTimeout(info.refreshTimer);
+    info.tailWindow?.dispose();
+    if (info.abortController) info.abortController.abort();
+    info.pollTimer = null;
+    info.refreshTimer = null;
+    info.abortController = null;
+  },
+
+  _scrollUltracodeAgentTranscriptToLatest(agentId) {
+    const info = this.ultracodeAgentWindows && this.ultracodeAgentWindows.get(agentId);
+    if (!info || !info.element || !info.elements) return;
+    void info.tailWindow?.scrollToLatest();
+  },
+
+  _setUltracodeAgentTranscriptMode(agentId) {
+    const info = this.ultracodeAgentWindows && this.ultracodeAgentWindows.get(agentId);
+    if (!info || !info.elements) return;
+    info.mode = 'transcript';
+    info.lastContent = null;
+    info.elements.transcriptButton.classList.add('active');
+    info.elements.transcriptButton.setAttribute('aria-pressed', 'true');
+    info.tailWindow.reset();
+    void this._refreshUltracodeAgentTranscript(agentId, { scrollLatest: true });
+  },
+
+  _scheduleUltracodeAgentTranscriptRefresh(agentId) {
+    const info = this.ultracodeAgentWindows && this.ultracodeAgentWindows.get(agentId);
+    if (!info || !info.element || !info.element.isConnected) return;
+    if (info.refreshTimer) clearTimeout(info.refreshTimer);
+    info.refreshTimer = setTimeout(() => {
+      info.refreshTimer = null;
+      void this._refreshUltracodeAgentTranscript(agentId);
+    }, SUBAGENT_TRANSCRIPT_REFRESH_DEBOUNCE_MS);
+  },
+
+  async _refreshUltracodeAgentTranscript(agentId, options = {}) {
+    const info = this.ultracodeAgentWindows && this.ultracodeAgentWindows.get(agentId);
+    if (!info || !info.element || !info.element.isConnected) return;
+
+    const requestId = ++info.requestId;
+    const anchor = info.tailWindow.captureAnchor();
+    if (info.abortController) info.abortController.abort();
+    const controller = new AbortController();
+    info.abortController = controller;
+    try {
+      const data = this._fetchWorkflowAgentTranscript
+        ? await this._fetchWorkflowAgentTranscript(agentId, info.tailWindow.limit, controller.signal)
+        : null;
+      if (requestId !== info.requestId || !info.element.isConnected) return;
+      this.renderUltracodeAgentWindowContent(agentId, data, { ...options, anchor });
+    } catch (error) {
+      if (error?.name === 'AbortError' || requestId !== info.requestId) return;
+      info.elements.meta.textContent = 'Refresh failed · retrying';
+      console.error('Failed to refresh workflow agent transcript:', error);
+    }
+  },
 
   /** Open (or focus) the floating transcript window for a workflow agent. */
-  async openUltracodeAgentWindow(agentId, runId) {
+  openUltracodeAgentWindow(agentId, runId) {
     this._ensureUltracodeWindowState();
     if (!agentId) return;
     this._removeMinimizedUltracodeAgent(agentId); // an explicit open overrides a past minimize
@@ -540,10 +619,7 @@ Object.assign(CodemanApp.prototype, {
     } else if (!this.createUltracodeAgentWindow(agentId, runId)) {
       return;
     }
-    // Body shows a loading state until the fetch lands (re-fetch on focus too, so a
-    // still-running agent's transcript grows as you re-click).
-    const data = this._fetchWorkflowAgentTranscript ? await this._fetchWorkflowAgentTranscript(agentId) : null;
-    this.renderUltracodeAgentWindowContent(agentId, data);
+    this._setUltracodeAgentTranscriptMode(agentId);
   },
 
   /** Build and mount the floating agent-transcript window shell near its parent. */
@@ -567,8 +643,16 @@ Object.assign(CodemanApp.prototype, {
           <button class="uw-close" type="button" title="Close">&times;</button>
         </div>
       </div>
+      <div class="uw-transcript-controls" role="group" aria-label="Transcript actions">
+        <button type="button" data-mode="transcript" aria-pressed="true">Transcript</button>
+        <button type="button" class="uw-external" data-role="external" title="View in another browser tab" aria-label="View in another browser tab">↗</button>
+      </div>
       <div class="ultracode-window-body">
-        <div class="subagent-empty">Loading transcript…</div>
+        <div class="uw-transcript subagent-transcript-content" data-role="content">Loading transcript…</div>
+      </div>
+      <div class="uw-transcript-footer">
+        <span data-role="meta">Loading…</span>
+        <button type="button" class="uw-latest" data-role="latest" hidden title="Follow latest output">↓ Latest</button>
       </div>
     `;
 
@@ -598,7 +682,48 @@ Object.assign(CodemanApp.prototype, {
       this.closeUltracodeAgentWindow(agentId);
     });
 
-    this.ultracodeAgentWindows.set(agentId, { element: win, runId, dragListeners });
+    const info = {
+      element: win,
+      runId,
+      dragListeners,
+      mode: 'transcript',
+      lastContent: null,
+      requestId: 0,
+      abortController: null,
+      refreshTimer: null,
+      pollTimer: null,
+      elements: {
+        body: win.querySelector('.ultracode-window-body'),
+        content: win.querySelector('[data-role="content"]'),
+        meta: win.querySelector('[data-role="meta"]'),
+        latest: win.querySelector('[data-role="latest"]'),
+        transcriptButton: win.querySelector('[data-mode="transcript"]'),
+        externalButton: win.querySelector('[data-role="external"]'),
+      },
+      tailWindow: null,
+    };
+    this.ultracodeAgentWindows.set(agentId, info);
+
+    info.tailWindow = SubagentTranscriptView.createTailWindow({
+      scroller: info.elements.body,
+      latestButton: info.elements.latest,
+      initialLimit: SUBAGENT_TRANSCRIPT_STREAM_LIMIT,
+      pageSize: SUBAGENT_TRANSCRIPT_STREAM_LIMIT,
+      followThreshold: SUBAGENT_TRANSCRIPT_FOLLOW_THRESHOLD_PX,
+      onRequest: (requestOptions) => this._refreshUltracodeAgentTranscript(agentId, requestOptions),
+    });
+    info.elements.transcriptButton.addEventListener('click', () => this._setUltracodeAgentTranscriptMode(agentId));
+    info.elements.externalButton.addEventListener('click', () => this.openSubagentBrowserTab(agentId));
+    info.pollTimer = setInterval(() => {
+      if (!info.element.isConnected || this.ultracodeAgentWindows.get(agentId) !== info) {
+        this._disposeUltracodeAgentTranscriptState(info);
+        return;
+      }
+      if (this._isUltracodeAgentActive(agentId, info.runId)) {
+        void this._refreshUltracodeAgentTranscript(agentId);
+      }
+    }, SUBAGENT_TRANSCRIPT_POLL_MS);
+
     this.updateConnectionLines();
     return win;
   },
@@ -615,18 +740,35 @@ Object.assign(CodemanApp.prototype, {
   },
 
   /** Fill an agent window's body with the fetched transcript (or a friendly empty state). */
-  renderUltracodeAgentWindowContent(agentId, data) {
+  renderUltracodeAgentWindowContent(agentId, data, options = {}) {
     const info = this.ultracodeAgentWindows.get(agentId);
-    if (!info || !info.element) return;
-    const body = info.element.querySelector('.ultracode-window-body');
-    if (!body) return;
-    if (!data || !data.formatted || !data.entryCount) {
-      body.innerHTML =
-        '<div class="subagent-empty">No transcript available yet — the agent may be queued, aged out of tracking, or subagent tracking is disabled.</div>';
-      return;
+    if (!info || !info.element || !info.elements) return;
+    const hasTranscript = !!(data && Array.isArray(data.blocks) && data.entryCount);
+    const content = hasTranscript ? JSON.stringify(data.blocks) : '';
+    const firstRender = info.lastContent === null;
+    if (content !== info.lastContent) {
+      info.lastContent = content;
+      if (hasTranscript) {
+        SubagentTranscriptView.replace(info.elements.content, data.blocks, (markdown) =>
+          this._renderMarkdown(markdown)
+        );
+        this._bindResponseViewerInteractions(info.elements.content);
+      } else {
+        info.elements.content.innerHTML =
+          '<div class="sat-empty">No transcript available yet. The agent may be queued, aged out of tracking, or subagent tracking may be disabled.</div>';
+      }
     }
-    const text = escapeHtml(data.formatted.join('\n'));
-    body.innerHTML = `<div class="uw-summary">${data.entryCount} entries</div><pre class="uw-transcript">${text}</pre>`;
+    const loadedEntryCount = hasTranscript ? data.entryCount : 0;
+    const totalEntryCount = hasTranscript ? data.totalEntryCount : 0;
+    info.tailWindow.setCounts(loadedEntryCount, totalEntryCount);
+    info.tailWindow.restoreAfterRender(options.anchor || { scrollTop: 0, scrollHeight: 0 }, {
+      preserveAnchor: options.preserveAnchor === true,
+      scrollLatest: options.scrollLatest === true,
+      firstRender,
+    });
+    info.elements.meta.textContent = hasTranscript
+      ? `${data.entryCount} of ${data.totalEntryCount} entries · ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}`
+      : 'Waiting for transcript output';
   },
 
   /** Close one floating agent-transcript window. */
@@ -634,6 +776,7 @@ Object.assign(CodemanApp.prototype, {
     this._ensureUltracodeWindowState();
     const info = this.ultracodeAgentWindows.get(agentId);
     if (!info) return;
+    this._disposeUltracodeAgentTranscriptState(info);
     this._teardownUltracodeDrag(info.dragListeners);
     if (info.element) info.element.remove();
     this.ultracodeAgentWindows.delete(agentId);
@@ -651,6 +794,7 @@ Object.assign(CodemanApp.prototype, {
     }
     this.ultracodeWindows.clear();
     for (const [, info] of this.ultracodeAgentWindows) {
+      this._disposeUltracodeAgentTranscriptState(info);
       this._teardownUltracodeDrag(info.dragListeners);
       if (info.element) info.element.remove();
     }

@@ -14,6 +14,7 @@
  *
  * @mixin Extends CodemanApp.prototype via Object.assign
  * @dependency app.js (CodemanApp class, this.subagents, this.subagentWindows, this.minimizedSubagents)
+ * @dependency panels-ui.js (viewSubagentTranscript)
  * @dependency constants.js (escapeHtml)
  * @loadorder 15 of 15 — loaded last, after api-client.js
  */
@@ -550,6 +551,12 @@ Object.assign(CodemanApp.prototype, {
 
   openSubagentWindow(agentId, options = {}) {
     const focusFileBrowser = options.focusFileBrowser !== false;
+    const transcriptMode = options.transcriptMode === 'transcript' ? 'transcript' : null;
+    const showRequestedTranscript = () => {
+      if (transcriptMode && typeof this._setSubagentTranscriptMode === 'function') {
+        this._setSubagentTranscriptMode(agentId, transcriptMode);
+      }
+    };
     // If window already exists, focus it
     if (this.subagentWindows.has(agentId)) {
       const existing = this.subagentWindows.get(agentId);
@@ -562,6 +569,7 @@ Object.assign(CodemanApp.prototype, {
         Promise.resolve(this.selectSession(agent.parentSessionId)).then(() => {
           this.restoreSubagentWindow(agentId);
           if (focusFileBrowser) this.focusFileBrowserSubagent?.(agentId);
+          showRequestedTranscript();
         });
         return;
       }
@@ -577,6 +585,7 @@ Object.assign(CodemanApp.prototype, {
         this.restoreSubagentWindow(agentId);
       }
       if (focusFileBrowser) this.focusFileBrowserSubagent?.(agentId);
+      showRequestedTranscript();
       return;
     }
 
@@ -728,12 +737,24 @@ Object.assign(CodemanApp.prototype, {
           <span class="status ${agent.status}">${agent.status}</span>
         </div>
         <div class="subagent-window-actions">
-          <button onclick="app.closeSubagentWindow(${escapeHtml(JSON.stringify(agentId))})" title="Minimize to tab">─</button>
+          <button type="button" onclick="app.closeSubagentWindow(${escapeHtml(JSON.stringify(agentId))})" title="Minimize to tab" aria-label="Minimize to tab">─</button>
         </div>
       </div>
+      <div class="subagent-window-transcript-controls" role="group" aria-label="Subagent window view">
+        <button type="button" data-mode="activity" aria-pressed="true">Activity</button>
+        <button type="button" class="subagent-window-transcript-btn" data-mode="transcript" aria-pressed="false">Transcript</button>
+        <button type="button" data-action="open-browser-tab" title="Open transcript in another browser tab" aria-label="Open transcript in another browser tab">&#x2197;</button>
+      </div>
       ${parentHeader}
-      <div class="subagent-window-body" id="subagent-window-body-${agentId}">
+      <div class="subagent-window-body subagent-window-activity-pane" id="subagent-window-body-${agentId}">
         <div class="subagent-empty">Loading activity...</div>
+      </div>
+      <div class="subagent-window-transcript-pane" data-role="scroller" hidden>
+        <div class="subagent-transcript-content" data-role="content">Loading transcript...</div>
+      </div>
+      <div class="subagent-window-transcript-footer" hidden>
+        <span data-role="meta">Loading...</span>
+        <button type="button" data-role="latest" hidden title="Follow latest output">↓ Latest</button>
       </div>
     `;
 
@@ -779,6 +800,19 @@ Object.assign(CodemanApp.prototype, {
       minimized: false,
       hidden: shouldHide,
       dragListeners, // Store for cleanup to prevent memory leaks
+    });
+
+    win.querySelector('[data-mode="activity"]')?.addEventListener('click', (event) => {
+      event.stopPropagation();
+      this._setSubagentTranscriptMode?.(agentId, 'activity');
+    });
+    win.querySelector('[data-mode="transcript"]')?.addEventListener('click', (event) => {
+      event.stopPropagation();
+      this.viewSubagentTranscript?.(agentId);
+    });
+    win.querySelector('[data-action="open-browser-tab"]')?.addEventListener('click', (event) => {
+      event.stopPropagation();
+      this.openSubagentBrowserTab?.(agentId);
     });
 
     // Hide window if not for active session
@@ -844,6 +878,7 @@ Object.assign(CodemanApp.prototype, {
 
     // Persist the state change (new window opened)
     this.saveSubagentWindowStates();
+    showRequestedTranscript();
   },
 
   closeSubagentWindow(agentId) {
@@ -869,6 +904,7 @@ Object.assign(CodemanApp.prototype, {
     // Always minimize to tab
     windowData.element.style.display = 'none';
     windowData.minimized = true;
+    this._pauseSubagentTranscriptViewer?.(agentId);
 
     // Track minimized agent for the session (use the TAB's session ID)
     if (parentSessionId) {
@@ -923,6 +959,7 @@ Object.assign(CodemanApp.prototype, {
   cleanupAllFloatingWindows() {
     // Clean up all subagent windows with their ResizeObservers and drag listeners
     for (const [agentId, windowData] of this.subagentWindows) {
+      this._cleanupSubagentTranscriptViewer?.(agentId);
       if (windowData.resizeObserver) {
         windowData.resizeObserver.disconnect();
       }
@@ -1072,13 +1109,14 @@ Object.assign(CodemanApp.prototype, {
         shouldShow = !parentSessionId || parentSessionId === this.activeSessionId;
       }
 
+      windowData.minimized = false;
       if (shouldShow) {
         windowData.element.style.display = 'flex';
         windowData.element.style.zIndex = ++this.subagentWindowZIndex;
         windowData.hidden = false;
         this.focusFileBrowserSubagent?.(agentId);
+        this._scheduleSubagentTranscriptRefresh?.(agentId);
       }
-      windowData.minimized = false;
 
       // Lazily re-create teammate terminal if it was disposed on minimize.
       // Only re-create when the window is actually becoming visible.

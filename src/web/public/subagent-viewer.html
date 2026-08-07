@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en" data-skin="daylight-blue">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#11151c" />
+    <title>Subagent transcript · Codeman</title>
+    <link rel="stylesheet" href="/styles.css" />
+    <script defer src="/vendor/marked.min.js"></script>
+    <script defer src="/vendor/dompurify.min.js"></script>
+    <script defer src="/sanitize-html.js"></script>
+    <script defer src="/subagent-transcript-view.js"></script>
+    <script defer src="/subagent-viewer.js"></script>
+  </head>
+  <body class="subagent-viewer-page">
+    <header class="subagent-viewer-header">
+      <button
+        id="subagentViewerReturn"
+        class="subagent-viewer-return"
+        type="button"
+        data-action="return-to-codeman"
+        title="Return to Codeman"
+      >
+        <span aria-hidden="true">←</span>
+        <span>Return to Codeman</span>
+      </button>
+      <div class="subagent-viewer-identity">
+        <strong id="subagentViewerTitle">Subagent transcript</strong>
+        <span id="subagentViewerWorkspace"></span>
+      </div>
+      <span id="subagentViewerStatus" class="subagent-viewer-status">Loading</span>
+    </header>
+    <main id="subagentViewerScroller" class="subagent-viewer-scroller">
+      <div id="subagentViewerContent" class="subagent-transcript-content" data-role="content">
+        <div class="sat-empty">Loading transcript…</div>
+      </div>
+    </main>
+    <footer class="subagent-viewer-footer">
+      <span id="subagentViewerMeta">Loading…</span>
+      <button id="subagentViewerLatest" type="button" hidden title="Follow latest output">↓ Latest</button>
+    </footer>
+  </body>
+</html>
