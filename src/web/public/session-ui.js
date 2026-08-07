@@ -567,10 +567,23 @@ Object.assign(CodemanApp.prototype, {
     }
   },
 
-  /** Send Enter through the controller-owned draft and delivery path. */
+  /**
+   * Send Enter through the controller-owned draft and delivery path.
+   *
+   * Routed through the SAME resolveEnterAction() the keyboard uses, so the
+   * toolbar button and the key agree. It used to hard-code sendControl('\r'),
+   * which meant the button always submitted while the key might insert a
+   * newline — two Enter surfaces, two behaviors, on the same screen.
+   */
   sendEnterKey() {
     if (!this.activeSessionId) return;
-    this._terminalInputController?.sendControl('\r');
+    const controller = this._terminalInputController;
+    if (!controller) return;
+    if (controller.resolveEnterAction() === 'linebreak') {
+      controller.insertDraftLineBreak();
+    } else {
+      controller.submitDraft();
+    }
   },
 
   _initRunMode() {

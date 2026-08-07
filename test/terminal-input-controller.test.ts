@@ -30,6 +30,8 @@ type TerminalInputController = {
   endComposition: (text: string) => void;
   handleTerminalData: (data: string, source?: string) => boolean;
   handleMobileEnterKeydown: (event?: { isComposing?: boolean; keyCode?: number }) => boolean;
+  resolveEnterAction: () => 'linebreak' | 'submit';
+  submitDraft: () => void;
   sendControl: (data: string) => void;
   sendExternalText: (text: string) => void;
   sendCommand: (command: string) => void;
@@ -160,6 +162,10 @@ function loadController(): TerminalInputControllerConstructor {
 
 function createHarness(localEcho = true) {
   const Controller = loadController();
+  // Advanceable clock: handleMobileEnterKeydown suppresses a second call within
+  // 50ms as a duplicate listener pass, so a fixed `now` would make two distinct
+  // keypresses look like one event.
+  const clock = { value: 1000 };
   const textarea = new FakeTextarea();
   const overlay = new FakeOverlay();
   const deliveries: string[] = [];
@@ -204,10 +210,11 @@ function createHarness(localEcho = true) {
     clearTimer: (id) => {
       timers.delete(id);
     },
-    now: () => 1000,
+    now: () => clock.value,
   });
   return {
     controller,
+    clock,
     textarea,
     overlay,
     deliveries,
@@ -459,6 +466,66 @@ describe('TerminalInputController', () => {
     expect(deletion.preventDefault).toHaveBeenCalledOnce();
     expect(paste.preventDefault).toHaveBeenCalledOnce();
     expect(overlay.pendingText).toBe('abfirst\n\nsecond');
+  });
+
+  // Enter used to mean `isLocalEchoEnabled() ? 'linebreak' : 'submit'`, so the same
+  // keystroke committed on one device and opened a newline on another — and could
+  // flip on ONE device as local echo followed session state. These pin the
+  // transport-independent rule instead: newline while a draft is open, submit once
+  // the caret is on a fresh empty line.
+  describe('Enter consistency', () => {
+    it('opens a new line on the first Enter and submits on the second', () => {
+      const { controller, overlay, deliveries, clock } = createHarness();
+      overlay.appendText('hello');
+
+      controller.handleMobileEnterKeydown({});
+      expect(controller.resolveEnterAction()).toBe('submit');
+      expect(overlay.pendingText).toBe('hello\n');
+      expect(deliveries).toEqual([]); // nothing submitted yet
+
+      clock.value += 500; // a separate keypress, not a duplicate listener pass
+      controller.handleMobileEnterKeydown({ keyCode: 13 });
+      // The trailing newline is trimmed from UNSENT text, so the agent receives
+      // the typed line and a single carriage return, not a stray blank line.
+      expect(overlay.pendingText).toBe('');
+      expect(deliveries.join('')).toContain('hello');
+      expect(deliveries.join('')).toContain('\r');
+      expect(deliveries.join('')).not.toContain('hello\n');
+    });
+
+    it('submits immediately when the draft is empty', () => {
+      const { controller, overlay } = createHarness();
+      expect(overlay.pendingText).toBe('');
+      expect(controller.resolveEnterAction()).toBe('submit');
+    });
+
+    it('submits on the first Enter with no draft buffer (immediate-echo transport)', () => {
+      // Local echo OFF is the desktop/shell path: there is no draft to line-break,
+      // so Enter keeps the standard terminal contract of submitting at once.
+      const { controller } = createHarness(false);
+      expect(controller.resolveEnterAction()).toBe('submit');
+    });
+
+    it('keeps typing on the same line a line break rather than a submit', () => {
+      const { controller, overlay } = createHarness();
+      overlay.appendText('first');
+      controller.handleMobileEnterKeydown({});
+      overlay.appendText('second');
+
+      // Mid-draft again: Enter must reopen a line, not commit.
+      expect(controller.resolveEnterAction()).toBe('linebreak');
+      expect(overlay.pendingText).toBe('first\nsecond');
+    });
+
+    it('never submits while a composition is active', () => {
+      const { controller, overlay } = createHarness();
+      overlay.appendText('done\n');
+      overlay.setCompositionText('ptr');
+
+      // A trailing newline would otherwise read as "submit", but an in-flight IME
+      // composition means the user is still typing the current line.
+      expect(controller.resolveEnterAction()).toBe('linebreak');
+    });
   });
 
   it('drops a compositionend that arrives after session state was reset', () => {

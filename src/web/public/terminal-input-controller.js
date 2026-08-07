@@ -314,9 +314,57 @@ class TerminalInputController {
   }
 
   /**
+   * Decide what an unmodified Enter means against the CURRENT draft.
+   *
+   * The rule is deliberately independent of transport: with a non-empty draft
+   * Enter opens a new line, and a second Enter on that empty new line submits.
+   * Previously this was `isLocalEchoEnabled() ? 'linebreak' : 'submit'`, so the
+   * SAME keystroke committed on one device and inserted a newline on another —
+   * and could change meaning on one device as local echo flipped with session
+   * state (`app.js`: "true when setting on + session active"). That is the
+   * unpredictability this replaces.
+   *
+   * With no draft buffer (immediate-echo shells, desktop) there is nothing to
+   * line-break, so Enter submits on the first press — the standard terminal
+   * contract every CLI expects.
+   *
+   * @returns {'linebreak' | 'submit'}
+   */
+  resolveEnterAction() {
+    if (!this._isLocalEchoEnabled()) return 'submit';
+    const overlay = this._getOverlay();
+    const pending = overlay?.pendingText ?? '';
+    const composing = overlay?.compositionText || '';
+    // Empty draft: nothing to break. Trailing newline: the user is already on a
+    // fresh empty line, so this Enter is the commit.
+    if (!pending && !composing) return 'submit';
+    if (!composing && pending.endsWith('\n')) return 'submit';
+    return 'linebreak';
+  }
+
+  /**
+   * Submit the current draft, dropping the trailing newline the FIRST Enter
+   * inserted so the CLI receives the typed text rather than the text plus a
+   * stray blank line.
+   *
+   * `removeChar()` returning 'pending' means it trimmed UNSENT text, so no
+   * backspace goes to the PTY — the newline never left the browser. Only the
+   * final `\r` is transmitted, which is what makes the two-Enter gesture look
+   * like one ordinary submit to the agent.
+   */
+  submitDraft() {
+    const overlay = this._getOverlay();
+    if (this._isLocalEchoEnabled() && (overlay?.pendingText ?? '').endsWith('\n')) {
+      overlay.removeChar();
+      this._captureDraft();
+    }
+    this.sendControl('\r');
+  }
+
+  /**
    * Own an unmodified Enter keydown from a touch keyboard before xterm can
-   * translate it to a carriage return. Local-echo sessions keep it as an
-   * editable line break; immediate-echo shells submit it once.
+   * translate it to a carriage return. Routed through {@link resolveEnterAction}
+   * so every Enter surface agrees on what the key means.
    */
   handleMobileEnterKeydown(event = {}) {
     const sessionId = this._getSessionId();
@@ -343,11 +391,11 @@ class TerminalInputController {
       return true;
     }
 
-    const action = this._isLocalEchoEnabled() ? 'linebreak' : 'submit';
+    const action = this.resolveEnterAction();
     if (action === 'linebreak') {
       this.insertDraftLineBreak();
     } else {
-      this.sendControl('\r');
+      this.submitDraft();
     }
     this._mobileEnterKeydownAction = action;
     this._mobileEnterKeydownHandledAt = now;
