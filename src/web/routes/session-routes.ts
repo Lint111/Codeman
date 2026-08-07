@@ -20,8 +20,9 @@ import {
   type SessionColor,
   type CodexConfig,
   type GeminiConfig,
+  type AntigravityConfig,
 } from '../../types.js';
-import { Session, isAltScreenStripMode } from '../../session.js';
+import { Session, isAltScreenStripMode, isMuxAltScreenOnlyStripMode } from '../../session.js';
 import { SseEvent } from '../sse-events.js';
 import {
   CreateSessionSchema,
@@ -302,25 +303,35 @@ export function _resetPasteRateBuckets(): void {
 
 /**
  * Security (multi-user §6.3): the Claude-only permission-mode downgrade does not
- * cover the other CLIs' bypass switches. Codex `--dangerously-bypass-approvals-and-sandbox`
- * and Gemini `--approval-mode yolo` disable the safety classifier the non-granted-user
- * downgrade is meant to keep on, so clamp them for a non-granted owner. buildGeminiCommand
- * defaults an ABSENT approvalMode to yolo, so the gemini config must be MATERIALIZED
- * (auto_edit) even when the request sent none. No-op in single-user mode / for a granted
+ * cover the other CLIs' bypass switches. Codex `--dangerously-bypass-approvals-and-sandbox`,
+ * Gemini `--approval-mode yolo`, and Antigravity `--dangerously-skip-permissions` disable
+ * the safety classifier the non-granted-user downgrade is meant to keep on, so clamp them
+ * for a non-granted owner. buildGeminiCommand defaults an ABSENT approvalMode to yolo, so
+ * the gemini config must be MATERIALIZED (auto_edit) even when the request sent none.
+ * Antigravity is like Codex: an ABSENT config already defaults safe (no bypass flag), so
+ * only a sent config needs the flag forced off. No-op in single-user mode / for a granted
  * owner (canUsernameRunPrivilegedCommands returns true when !isMultiUserMode()).
  */
 async function clampExternalCliBypassForOwner(
   owner: string | undefined,
   codexConfig: CodexConfig | undefined,
-  geminiConfig: GeminiConfig | undefined
-): Promise<{ codexConfig: CodexConfig | undefined; geminiConfig: GeminiConfig | undefined }> {
+  geminiConfig: GeminiConfig | undefined,
+  antigravityConfig: AntigravityConfig | undefined
+): Promise<{
+  codexConfig: CodexConfig | undefined;
+  geminiConfig: GeminiConfig | undefined;
+  antigravityConfig: AntigravityConfig | undefined;
+}> {
   const granted = await canUsernameRunPrivilegedCommands(owner);
-  if (granted) return { codexConfig, geminiConfig };
-  // Non-granted: force codex bypass off (only meaningful when a config was sent) and
-  // materialize gemini to auto_edit (clamps an explicit 'yolo' and the yolo default).
+  if (granted) return { codexConfig, geminiConfig, antigravityConfig };
+  // Non-granted: force codex/antigravity bypass off (only meaningful when a config was
+  // sent) and materialize gemini to auto_edit (clamps an explicit 'yolo' and the yolo default).
   const clampedCodex = codexConfig ? { ...codexConfig, dangerouslyBypassApprovals: false } : codexConfig;
   const clampedGemini: GeminiConfig = { ...(geminiConfig ?? {}), approvalMode: 'auto_edit' };
-  return { codexConfig: clampedCodex, geminiConfig: clampedGemini };
+  const clampedAntigravity = antigravityConfig
+    ? { ...antigravityConfig, dangerouslySkipPermissions: false }
+    : antigravityConfig;
+  return { codexConfig: clampedCodex, geminiConfig: clampedGemini, antigravityConfig: clampedAntigravity };
 }
 
 export function registerSessionRoutes(
@@ -424,7 +435,7 @@ export function registerSessionRoutes(
     //
     // For keys the caller is actively setting, strip any stale disk entry a prior
     // Codeman version may have written. Scope limited to:
-    //   - Claude mode (OpenCode/Codex/Gemini don't read .claude/settings.local.json)
+    //   - Claude mode (OpenCode/Codex/Gemini/Antigravity don't read .claude/settings.local.json)
     //   - workingDir inside CASES_DIR / the per-user case space (Codeman's managed
     //     territory — we never mutate .claude/settings.local.json in arbitrary user
     //     repos that POST /api/sessions can target, as those may have hand-authored
@@ -434,6 +445,7 @@ export function registerSessionRoutes(
       body.mode !== 'opencode' &&
       body.mode !== 'codex' &&
       body.mode !== 'gemini' &&
+      body.mode !== 'antigravity' &&
       body.envOverrides &&
       Object.keys(body.envOverrides).length > 0 &&
       (workingDir.startsWith(CASES_DIR + '/') || workingDir.startsWith(managedCasesBase + '/'));
@@ -500,6 +512,15 @@ export function registerSessionRoutes(
         );
       }
     }
+    if (body.mode === 'antigravity') {
+      const { isAntigravityAvailable } = await import('../../utils/antigravity-cli-resolver.js');
+      if (!isAntigravityAvailable()) {
+        return createErrorResponse(
+          ApiErrorCode.OPERATION_FAILED,
+          'Antigravity CLI not found. Install with: curl -fsSL https://antigravity.google/cli/install.sh | bash'
+        );
+      }
+    }
 
     // Pre-validate resumeSessionId: check that the conversation file actually exists
     // in Claude's projects directory. If not, skip resume to avoid confusing
@@ -541,18 +562,20 @@ export function registerSessionRoutes(
           ? body.codexConfig?.model
           : mode === 'gemini'
             ? body.geminiConfig?.model
-            : mode !== 'shell'
-              ? modelConfig?.defaultModel || undefined
-              : undefined;
+            : mode === 'antigravity'
+              ? body.antigravityConfig?.model
+              : mode !== 'shell'
+                ? modelConfig?.defaultModel || undefined
+                : undefined;
     const claudeModeConfig = await ctx.getClaudeModeConfig();
     // Section 6.3: force non-granted users to a classifier-guarded mode.
     const effectiveClaudeMode = await resolveClaudeModeForUsername(claudeModeConfig.claudeMode, owner);
-    // Section 6.3: clamp Codex/Gemini bypass switches for a non-granted owner (no-op single-user/granted).
-    const { codexConfig: gatedCodexConfig, geminiConfig: gatedGeminiConfig } = await clampExternalCliBypassForOwner(
-      owner,
-      body.codexConfig,
-      body.geminiConfig
-    );
+    // Section 6.3: clamp Codex/Gemini/Antigravity bypass switches for a non-granted owner (no-op single-user/granted).
+    const {
+      codexConfig: gatedCodexConfig,
+      geminiConfig: gatedGeminiConfig,
+      antigravityConfig: gatedAntigravityConfig,
+    } = await clampExternalCliBypassForOwner(owner, body.codexConfig, body.geminiConfig, body.antigravityConfig);
     const terminalHistoryConfig = await ctx.getTerminalHistoryConfig();
     const session = new Session({
       workingDir,
@@ -567,6 +590,7 @@ export function registerSessionRoutes(
       openCodeConfig: mode === 'opencode' ? body.openCodeConfig : undefined,
       codexConfig: mode === 'codex' ? gatedCodexConfig : undefined,
       geminiConfig: mode === 'gemini' ? gatedGeminiConfig : undefined,
+      antigravityConfig: mode === 'antigravity' ? gatedAntigravityConfig : undefined,
       resumeSessionId: validatedResumeId,
       envOverrides: body.envOverrides,
       effort: body.effort,
@@ -813,11 +837,12 @@ export function registerSessionRoutes(
 
     try {
       // Auto-detect completion phrase from CLAUDE.md BEFORE starting (only if globally enabled and not explicitly disabled by user)
-      // Ralph tracker is not supported for opencode / codex / gemini sessions
+      // Ralph tracker is not supported for opencode / codex / gemini / antigravity sessions
       if (
         session.mode !== 'opencode' &&
         session.mode !== 'codex' &&
         session.mode !== 'gemini' &&
+        session.mode !== 'antigravity' &&
         ctx.store.getConfig().ralphEnabled &&
         !session.ralphTracker.autoEnableDisabled
       ) {
@@ -997,80 +1022,97 @@ export function registerSessionRoutes(
 
   // ========== Get Last Response (from transcript JSONL) ==========
 
-  // Resolves the most recent Claude conversation id for a session's cwd by
-  // tailing ~/.claude/history.jsonl. After `/clear`, Claude Code keeps writing
-  // to a new <uuid>.jsonl; history.jsonl is the only source-of-truth update
-  // that does not rely on project-local hooks (we intentionally don't install
-  // hooks in arbitrary user repos, see the POST /api/sessions comment).
+  // How far apart a ~/.claude/history.jsonl entry and a pane's Enter may be and
+  // still be the same submission. Claude appends to history as it accepts the
+  // prompt, so the true gap is milliseconds — this is slack for a loaded box,
+  // not a search radius.
+  const CLAUDE_SUBMIT_MATCH_MS = 10_000;
+  // history.jsonl grows forever; only the tail can hold entries near a submit.
+  const CLAUDE_HISTORY_TAIL_BYTES = 256 * 1024;
+
+  // Resolves the Claude conversation id THIS pane is currently on by matching
+  // ~/.claude/history.jsonl (which logs every submitted prompt as
+  // {project, sessionId, timestamp}) against the pane's last Enter. After
+  // `/clear` Claude keeps writing to a new <uuid>.jsonl, and history.jsonl is
+  // the only source-of-truth update that does not rely on project-local hooks
+  // (we intentionally don't install hooks in arbitrary user repos, see the
+  // POST /api/sessions comment).
   //
-  // Entries from OTHER Codeman sessions in the same cwd are filtered out by
-  // their known claudeSessionIds so concurrent tabs don't shadow each other,
-  // as long as each has had its id resolved at least once.
+  // The pane's own Enter is what makes an entry OURS. `project` alone is not:
+  // a cwd is shared by every other Codeman tab on it, by tabs long since
+  // closed, and by any plain `claude` the user runs in their own terminal —
+  // adopting the newest entry for the cwd pinned the viewer to whichever of
+  // those conversations was typed in last, so the eye showed a stranger's
+  // transcript. With no correlated entry we keep the id we have; a viewer one
+  // turn behind beats a viewer showing someone else's conversation.
+  const claudeHistoryPinCache = new LRUMap<string, { submitAt: number; claudeSessionId: string }>({ maxSize: 1024 });
   async function resolveActiveClaudeSessionIdFromHistory(
     session: Session,
     projectsDir: string
   ): Promise<string | null> {
-    const historyPath = join(homedir(), '.claude', 'history.jsonl');
+    const submitAt = session.lastSubmitAt;
+    if (!submitAt) return null; // never typed through Codeman — nothing to credit
+    const cached = claudeHistoryPinCache.get(session.id);
+    if (cached && cached.submitAt === submitAt) return cached.claudeSessionId;
+
+    // Ids another live pane is already pinned to can never be ours, and every
+    // pane sharing this cwd competes for the entry we are about to claim —
+    // including non-Claude panes, since a shell pane can run `claude` too.
     const otherClaudeIds = new Set<string>();
+    const otherSubmits: number[] = [];
     for (const s of ctx.sessions.values()) {
-      if (s.id !== session.id && s.workingDir === session.workingDir && s.claudeSessionId) {
-        otherClaudeIds.add(s.claudeSessionId);
-      }
+      if (s.id === session.id || s.workingDir !== session.workingDir) continue;
+      if (s.claudeSessionId) otherClaudeIds.add(s.claudeSessionId);
+      if (s.lastSubmitAt) otherSubmits.push(s.lastSubmitAt);
     }
 
-    let candidateSid: string | null = null;
-    try {
-      const content = await fs.readFile(historyPath, 'utf8');
-      const lines = content.split('\n');
-      for (let i = lines.length - 1; i >= 0; i--) {
-        const line = lines[i];
-        if (!line) continue;
-        try {
-          const entry = JSON.parse(line) as { project?: string; sessionId?: string };
-          if (
-            entry.project === session.workingDir &&
-            typeof entry.sessionId === 'string' &&
-            !otherClaudeIds.has(entry.sessionId)
-          ) {
-            candidateSid = entry.sessionId;
-            break;
-          }
-        } catch {
-          // Skip unparseable lines
-        }
-      }
-    } catch {
-      return null;
-    }
-    if (!candidateSid || candidateSid === session.id) return candidateSid;
+    const historyPath = join(homedir(), '.claude', 'history.jsonl');
+    const stat = await fs.stat(historyPath).catch(() => null);
+    if (!stat || stat.size === 0) return null;
+    const tail = await readFileTail(historyPath, Buffer.alloc(CLAUDE_HISTORY_TAIL_BYTES), stat.size);
+    if (!tail) return null;
 
-    // Safety: only adopt if the candidate's jsonl is more recently written
-    // than our initial conversation's jsonl. Blocks stale ids inherited from
-    // a prior Codeman session that happened to share this cwd.
-    try {
-      const projectDirs = await fs.readdir(projectsDir);
+    let best: { sessionId: string; dist: number } | undefined;
+    for (const line of tail.split('\n')) {
+      if (!line) continue;
+      let entry: { project?: string; sessionId?: string; timestamp?: number };
+      try {
+        entry = JSON.parse(line) as typeof entry;
+      } catch {
+        continue; // the first tail line is usually cut mid-JSON
+      }
+      const { sessionId, timestamp } = entry;
+      if (entry.project !== session.workingDir) continue;
+      if (typeof sessionId !== 'string' || !sessionId) continue;
+      if (typeof timestamp !== 'number') continue;
+      if (otherClaudeIds.has(sessionId)) continue;
+      const dist = Math.abs(timestamp - submitAt);
+      if (dist > CLAUDE_SUBMIT_MATCH_MS) continue;
+      if (otherSubmits.some((other) => Math.abs(timestamp - other) < dist)) continue; // another pane is closer
+      if (!best || dist <= best.dist) best = { sessionId, dist }; // ties: the newer entry wins
+    }
+    if (!best) return null;
+
+    // Sanity: the conversation we switch to must exist on disk and must not be
+    // staler than the one we are leaving. A `/clear` successor never is.
+    const currentSessionId = session.claudeSessionId || session.id;
+    if (best.sessionId !== currentSessionId) {
+      const projectDirs = await fs.readdir(projectsDir).catch(() => null);
+      if (!projectDirs) return null;
       let candidateMtime = 0;
-      let initialMtime = 0;
+      let currentMtime = 0;
       for (const projDir of projectDirs) {
-        try {
-          const cs = await fs.stat(join(projectsDir, projDir, `${candidateSid}.jsonl`));
-          if (cs.mtimeMs > candidateMtime) candidateMtime = cs.mtimeMs;
-        } catch {
-          /* not in this dir */
-        }
-        try {
-          const is = await fs.stat(join(projectsDir, projDir, `${session.id}.jsonl`));
-          if (is.mtimeMs > initialMtime) initialMtime = is.mtimeMs;
-        } catch {
-          /* not in this dir */
-        }
+        const candidateStat = await fs.stat(join(projectsDir, projDir, `${best.sessionId}.jsonl`)).catch(() => null);
+        if (candidateStat && candidateStat.mtimeMs > candidateMtime) candidateMtime = candidateStat.mtimeMs;
+        const currentStat = await fs.stat(join(projectsDir, projDir, `${currentSessionId}.jsonl`)).catch(() => null);
+        if (currentStat && currentStat.mtimeMs > currentMtime) currentMtime = currentStat.mtimeMs;
       }
-      if (candidateMtime === 0) return null;
-      if (initialMtime > 0 && candidateMtime <= initialMtime) return null;
-    } catch {
-      return null;
+      if (candidateMtime === 0) return null; // transcript not written yet — retry next poll
+      if (currentMtime > 0 && candidateMtime < currentMtime) return null;
     }
-    return candidateSid;
+
+    claudeHistoryPinCache.set(session.id, { submitAt, claudeSessionId: best.sessionId });
+    return best.sessionId;
   }
 
   interface ClaudeResponseMessage {
@@ -1268,6 +1310,11 @@ export function registerSessionRoutes(
     const activeId = await resolveActiveClaudeSessionIdFromHistory(session, projectsDir);
     if (activeId && activeId !== session.claudeSessionId) {
       session.adoptClaudeSessionId(activeId);
+      // Flush the Enter that vouched for this adoption to state.json. A `/clear`
+      // emits no completion event, so without this the anchor could still be
+      // unpersisted when the server restarts — and recovery would fall back to
+      // the launch conversation.
+      ctx.persistSessionState(session);
       // Docker sessions: keep the case's resume seed following the live conversation.
       if (session.docker) {
         void persistDockerCaseClaudeSessionId(CODEMAN_CONFIG_DIR, session.docker.containerName, activeId).catch(
@@ -1341,7 +1388,7 @@ export function registerSessionRoutes(
     return { cwd, originator };
   }
 
-  // The pane's last Enter (Session.codexLastSubmitAt) correlated against
+  // The pane's last Enter (Session.lastSubmitAt) correlated against
   // ~/.codex/history.jsonl, which logs every submitted user message as
   // {session_id, ts}. This identifies the thread the pane is ACTUALLY on and
   // is the only signal that survives /resume, /new and /fork typed inside the
@@ -1350,10 +1397,10 @@ export function registerSessionRoutes(
   // can't steal the attribution.
   const codexHistoryPinCache = new LRUMap<string, { submitAt: number; threadId: string }>({ maxSize: 1024 });
   async function resolveCodexThreadFromHistory(
-    session: { id: string; codexLastSubmitAt?: number },
+    session: { id: string; lastSubmitAt?: number },
     codexHome: string
   ): Promise<string | null> {
-    const submitAt = session.codexLastSubmitAt || 0;
+    const submitAt = session.lastSubmitAt || 0;
     if (!submitAt) return null;
     const cached = codexHistoryPinCache.get(session.id);
     if (cached && cached.submitAt === submitAt) return cached.threadId;
@@ -1367,8 +1414,8 @@ export function registerSessionRoutes(
     const WINDOW_MS = 15_000;
     const otherSubmits: number[] = [];
     for (const s of ctx.sessions.values()) {
-      if (s.id !== session.id && s.mode === 'codex' && s.codexLastSubmitAt) {
-        otherSubmits.push(s.codexLastSubmitAt);
+      if (s.id !== session.id && s.mode === 'codex' && s.lastSubmitAt) {
+        otherSubmits.push(s.lastSubmitAt);
       }
     }
 
@@ -1411,7 +1458,7 @@ export function registerSessionRoutes(
   async function findActiveCodexFile(session: {
     id: string;
     workingDir: string;
-    codexLastSubmitAt?: number;
+    lastSubmitAt?: number;
     codexConfig?: { resumeSessionId?: string };
   }): Promise<string | null> {
     const codexHome = process.env.CODEX_HOME || join(process.env.HOME || '/tmp', '.codex');
@@ -1792,6 +1839,11 @@ export function registerSessionRoutes(
         .replace(ALT_SCREEN_TOGGLE_PATTERN, '')
         .replace(ERASE_SCROLLBACK_PATTERN, '')
         .replace(MOUSE_TRACKING_PATTERN, '');
+    } else if (isMuxAltScreenOnlyStripMode(session.mode, session.usesMux)) {
+      // tmux-backed shell/opencode/antigravity: drop tmux's own client smcup only.
+      // A byte buffer recorded before the live-side strip existed can still carry
+      // it, and one replayed `\x1b[?1049h` re-parks xterm in the alt buffer (#205).
+      strippedBuffer = strippedBuffer.replace(ALT_SCREEN_TOGGLE_PATTERN, '');
     }
 
     if (tailBytes > 0 && strippedBuffer.length > tailBytes) {
@@ -2097,6 +2149,7 @@ export function registerSessionRoutes(
       openCodeConfig,
       codexConfig,
       geminiConfig,
+      antigravityConfig,
       envOverrides,
       effort,
     } = parseBody(QuickStartSchema, req.body);
@@ -2133,7 +2186,7 @@ export function registerSessionRoutes(
       if (!host) return createErrorResponse(ApiErrorCode.NOT_FOUND, 'Remote host not found');
 
       // Per-session config that is applied to the LOCAL tmux/CLI wrapper (env vars via
-      // tmux setenv, effort/model CLI args, codex/gemini/opencode config) does NOT
+      // tmux setenv, effort/model CLI args, codex/gemini/antigravity/opencode config) does NOT
       // cross ssh, so it would silently no-op. Reject rather than pretend it worked —
       // remote command/env customization goes through the per-host command override.
       if (
@@ -2142,6 +2195,7 @@ export function registerSessionRoutes(
         modelOverride !== undefined ||
         codexConfig ||
         geminiConfig ||
+        antigravityConfig ||
         openCodeConfig
       ) {
         return createErrorResponse(
@@ -2172,6 +2226,7 @@ export function registerSessionRoutes(
         effort ||
         codexConfig ||
         geminiConfig ||
+        antigravityConfig ||
         openCodeConfig
       ) {
         return createErrorResponse(
@@ -2264,6 +2319,17 @@ export function registerSessionRoutes(
         }
       }
 
+      // Check Antigravity availability if requested
+      if (mode === 'antigravity') {
+        const { isAntigravityAvailable } = await import('../../utils/antigravity-cli-resolver.js');
+        if (!isAntigravityAvailable()) {
+          return createErrorResponse(
+            ApiErrorCode.OPERATION_FAILED,
+            'Antigravity CLI not found. Install with: curl -fsSL https://antigravity.google/cli/install.sh | bash'
+          );
+        }
+      }
+
       // Resolve case path: check linked-cases registry first, then fall back to CASES_DIR.
       // This mirrors the behaviour of resolveCasePath() in case-routes so that linked
       // external project directories are honoured by quick-start just like regular case routes.
@@ -2310,8 +2376,8 @@ export function registerSessionRoutes(
         writeFileSync(join(resolvedCasePath, 'CLAUDE.md'), claudeMd);
 
         // Write .claude/settings.local.json with hooks for desktop notifications
-        // (Claude-specific — OpenCode, Codex, and Gemini use their own systems)
-        if (mode === 'claude') {
+        // (Claude-specific — OpenCode, Codex, Gemini, and Antigravity use their own systems)
+        if (mode !== 'opencode' && mode !== 'codex' && mode !== 'gemini' && mode !== 'antigravity') {
           await writeHooksConfig(resolvedCasePath);
         }
 
@@ -2330,7 +2396,14 @@ export function registerSessionRoutes(
     // Scaffold hooks (+ a CLAUDE.md) if MISSING so in-container permission prompts and
     // hook-idle detection fire (decision: wire hooks now). Never clobbers an existing
     // configured project. Skipped for external CLIs (they use their own systems).
-    if (docker && docker.hooksEnabled && mode === 'claude') {
+    if (
+      docker &&
+      docker.hooksEnabled &&
+      mode !== 'opencode' &&
+      mode !== 'codex' &&
+      mode !== 'gemini' &&
+      mode !== 'antigravity'
+    ) {
       try {
         if (!existsSync(join(resolvedCasePath, 'CLAUDE.md'))) {
           const templatePath = await ctx.getDefaultClaudeMdPath();
@@ -2355,6 +2428,7 @@ export function registerSessionRoutes(
       mode !== 'opencode' &&
       mode !== 'codex' &&
       mode !== 'gemini' &&
+      mode !== 'antigravity' &&
       !remote &&
       envOverrides &&
       Object.keys(envOverrides).length > 0
@@ -2373,17 +2447,19 @@ export function registerSessionRoutes(
           ? codexConfig?.model
           : mode === 'gemini'
             ? geminiConfig?.model
-            : mode !== 'shell'
-              ? qsModelConfig?.defaultModel || undefined
-              : undefined;
+            : mode === 'antigravity'
+              ? antigravityConfig?.model
+              : mode !== 'shell'
+                ? qsModelConfig?.defaultModel || undefined
+                : undefined;
     const qsClaudeModeConfig = await ctx.getClaudeModeConfig();
     const qsEffectiveClaudeMode = await resolveClaudeModeForUsername(qsClaudeModeConfig.claudeMode, owner);
-    // Section 6.3: clamp Codex/Gemini bypass switches for a non-granted owner (no-op single-user/granted).
-    const { codexConfig: qsGatedCodexConfig, geminiConfig: qsGatedGeminiConfig } = await clampExternalCliBypassForOwner(
-      owner,
-      codexConfig,
-      geminiConfig
-    );
+    // Section 6.3: clamp Codex/Gemini/Antigravity bypass switches for a non-granted owner (no-op single-user/granted).
+    const {
+      codexConfig: qsGatedCodexConfig,
+      geminiConfig: qsGatedGeminiConfig,
+      antigravityConfig: qsGatedAntigravityConfig,
+    } = await clampExternalCliBypassForOwner(owner, codexConfig, geminiConfig, antigravityConfig);
     const qsTerminalHistoryConfig = await ctx.getTerminalHistoryConfig();
     const session = new Session({
       workingDir: resolvedCasePath,
@@ -2399,6 +2475,7 @@ export function registerSessionRoutes(
       openCodeConfig: mode === 'opencode' ? openCodeConfig : undefined,
       codexConfig: mode === 'codex' ? qsGatedCodexConfig : undefined,
       geminiConfig: mode === 'gemini' ? qsGatedGeminiConfig : undefined,
+      antigravityConfig: mode === 'antigravity' ? qsGatedAntigravityConfig : undefined,
       envOverrides,
       effort,
       remote,
@@ -2441,7 +2518,7 @@ export function registerSessionRoutes(
         });
         ctx.broadcast(SseEvent.SessionInteractive, { id: session.id, mode: 'shell' });
       } else {
-        // 'claude', 'opencode', 'codex', and 'gemini' modes use startInteractive()
+        // 'claude', 'opencode', 'codex', 'gemini', and 'antigravity' modes use startInteractive()
         await session.startInteractive();
         getLifecycleLog().log({
           event: 'started',
@@ -2556,6 +2633,64 @@ export function registerSessionRoutes(
   }
 
   /**
+   * Is this `entrypoint` value an automated/SDK-driven invocation?
+   *
+   * ⚠️ Deliberately a BLOCKLIST on the SDK shape, not an allowlist on `'cli'`.
+   * The exclusion below hides rows, so an allowlist fails CLOSED on any value
+   * Claude Code has not shipped yet: the day it stamps a new interactive
+   * entrypoint (a rename, or a second interactive host), every transcript stops
+   * matching `'cli'` and the whole Past Sessions list goes blank with nothing in
+   * the UI to explain it. A blocklist fails OPEN instead — an automated
+   * entrypoint we do not recognize yet costs a few noisy rows, which is the
+   * annoyance this filter set out to fix rather than a broken feature.
+   *
+   * Observed values: `cli` (interactive), `sdk-cli` / `sdk-py` (automated).
+   */
+  function isAutomatedEntrypoint(entrypoint: string): boolean {
+    return /^sdk(-|$)/.test(entrypoint);
+  }
+
+  /**
+   * The `entrypoint` field Claude Code stamps on its own message records:
+   * 'cli' for a real interactive session, something else (e.g. 'sdk-py') for
+   * an SDK/automated invocation. Used to exclude non-interactive transcripts
+   * (CI review bots, etc.) from the resumable history list — they were never
+   * something a user can resume into.
+   *
+   * Scans every `"type":"user"`/`"type":"assistant"` line with an entrypoint
+   * field — not just the first one — and returns 'cli' the moment ANY of them
+   * carries it. A transcript is excluded only when every entrypoint-bearing
+   * message says something else; "first field wins" would misattribute a
+   * transcript that started under an older Claude Code version (no entrypoint
+   * on its true first message) and later picked up a non-'cli' entrypoint on
+   * some later message, wrongly hiding a genuinely interactive session. This
+   * deliberately errs toward keeping a session visible: one real interactive
+   * message anywhere is enough. Returns undefined ("unknown", fail-open) only
+   * when nothing scanned carries the field at all.
+   */
+  function extractTranscriptEntrypoint(text: string): string | undefined {
+    let start = 0;
+    let sawNonCli: string | undefined;
+    while (start < text.length) {
+      const end = text.indexOf('\n', start);
+      const line = end === -1 ? text.slice(start) : text.slice(start, end);
+      start = end === -1 ? text.length : end + 1;
+      if (!line.includes('"type":"user"') && !line.includes('"type":"assistant"')) continue;
+      if (!line.includes('"entrypoint"')) continue;
+      try {
+        const entry = JSON.parse(line);
+        if ((entry.type === 'user' || entry.type === 'assistant') && typeof entry.entrypoint === 'string') {
+          if (entry.entrypoint === 'cli') return 'cli';
+          sawNonCli ??= entry.entrypoint;
+        }
+      } catch {
+        // Malformed/truncated line — skip
+      }
+    }
+    return sawNonCli;
+  }
+
+  /**
    * Extract the text of the LAST user message from a JSONL transcript chunk
    * (COD-145). Mirrors `extractFirstUserPrompt` exactly — same user-message
    * detection, same noise/secret/slash-command filters, same 120-char cap — but
@@ -2650,7 +2785,12 @@ export function registerSessionRoutes(
       for (let end = maxLook - 1; end >= idx; end--) {
         const candidates: string[] = [];
         if (end === idx) {
-          candidates.push(segments[idx]);
+          // Skip an EMPTY segment: `isDir(current + '/' + '')` stats `current + '/'`,
+          // which always succeeds, so the empty candidate would match unconditionally
+          // and swallow the doubled dash that is the whole signature of a dotdir. It
+          // then resolves "/home/x/.sib" to "/home/x//sib" whenever a non-dot sibling
+          // exists, and shadows the dotdir branch below in every other case.
+          if (segments[idx] !== '') candidates.push(segments[idx]);
         } else {
           candidates.push(segments.slice(idx, end + 1).join('-'));
           candidates.push(segments.slice(idx, end + 1).join('_'));
@@ -2660,6 +2800,25 @@ export function registerSessionRoutes(
           if (await isDir(candidate)) {
             const result = await tryDecode(end + 1, candidate);
             if (result) return result;
+          }
+        }
+      }
+      // The encoder maps both '/' and '.' to '-', so a literal '.' in the
+      // original path (e.g. "/home/timkjr/.codeman") collapses into an empty
+      // split segment here. Retry this window as a dotdir/dotfile: ".<join>".
+      if (segments[idx] === '' && idx + 1 < segments.length) {
+        const dotMaxLook = Math.min(idx + 1 + 4, segments.length);
+        for (let end = dotMaxLook - 1; end >= idx + 1; end--) {
+          const dotCandidates =
+            end === idx + 1
+              ? [segments[idx + 1]]
+              : [segments.slice(idx + 1, end + 1).join('-'), segments.slice(idx + 1, end + 1).join('_')];
+          for (const child of dotCandidates) {
+            const candidate = current + '/.' + child;
+            if (await isDir(candidate)) {
+              const result = await tryDecode(end + 1, candidate);
+              if (result) return result;
+            }
           }
         }
       }
@@ -2680,7 +2839,10 @@ export function registerSessionRoutes(
       for (let end = i; end < maxLook; end++) {
         const candidates: string[] = [];
         if (end === i) {
-          candidates.push(segments[i]);
+          // Same empty-segment skip as tryDecode above. This loop is shortest-match
+          // first, so without it the empty candidate matches on the very first try
+          // and sets `matched`, leaving the dotdir branch below permanently dead.
+          if (segments[i] !== '') candidates.push(segments[i]);
         } else {
           candidates.push(segments.slice(i, end + 1).join('_'));
           candidates.push(segments.slice(i, end + 1).join('-'));
@@ -2696,9 +2858,41 @@ export function registerSessionRoutes(
         }
         if (matched) break;
       }
+      if (!matched && segments[i] === '' && i + 1 < segments.length) {
+        const dotMaxLook = Math.min(i + 1 + 4, segments.length);
+        for (let end = i + 1; end < dotMaxLook; end++) {
+          const dotCandidates =
+            end === i + 1
+              ? [segments[i + 1]]
+              : [segments.slice(i + 1, end + 1).join('_'), segments.slice(i + 1, end + 1).join('-')];
+          for (const child of dotCandidates) {
+            const candidate = current + '/.' + child;
+            if (await isDir(candidate)) {
+              current = candidate;
+              i = end + 1;
+              matched = true;
+              break;
+            }
+          }
+          if (matched) break;
+        }
+      }
       if (!matched) {
-        current = current + '/' + segments[i];
-        i++;
+        if (segments[i] === '') {
+          // Nothing on disk matched (the usual reason this fallback runs at all is
+          // that the directory was deleted). An empty segment still means the
+          // encoder ate a literal '.', so guess the dotdir form rather than
+          // appending a bare '/' and emitting a "//" path.
+          if (i + 1 < segments.length) {
+            current = current + '/.' + segments[i + 1];
+            i += 2;
+          } else {
+            i++;
+          }
+        } else {
+          current = current + '/' + segments[i];
+          i++;
+        }
       }
     }
     const finalExists = await fs
@@ -2708,7 +2902,7 @@ export function registerSessionRoutes(
     return finalExists ? current : process.env.HOME || '/tmp';
   }
 
-  /** Read the first 16KB of a file for content sniffing. */
+  /** Read the first `buf.length` bytes of a file for content sniffing. */
   async function readFileHead(path: string, buf: Buffer): Promise<string | null> {
     try {
       const fd = await fs.open(path, 'r');
@@ -2751,7 +2945,12 @@ export function registerSessionRoutes(
 
   // Scan a single project directory and return all valid history sessions in it.
   // Reused by both the global overview and the single-folder drill-down.
-  async function scanProjectDir(projPath: string, projDir: string, headBuf: Buffer): Promise<HistorySession[]> {
+  async function scanProjectDir(
+    projPath: string,
+    projDir: string,
+    smallHeadBuf: Buffer,
+    headBuf: Buffer
+  ): Promise<HistorySession[]> {
     const out: HistorySession[] = [];
     const stat = await fs.stat(projPath).catch(() => null);
     if (!stat?.isDirectory()) return out;
@@ -2769,22 +2968,45 @@ export function registerSessionRoutes(
       if (!fileStat) continue;
       if (fileStat.size < 4000) continue;
 
-      let firstPrompt: string | undefined;
-      const head = await readFileHead(filePath, headBuf);
       const hasConversation = (text: string) =>
         text.includes('"type":"user"') || text.includes('"type":"assistant"') || text.includes('"type":"summary"');
 
+      // Two-tier head read: try the cheap smallHeadBuf (16KB) size first -- enough
+      // for the vast majority of transcripts -- and only escalate to the full
+      // headBuf (128KB) when that wasn't enough. Reading 128KB unconditionally for
+      // EVERY file in the directory roughly quadrupled the cost of a full scan
+      // (measured against a real ~/.claude/projects tree: ~4x both bytes read and
+      // wall time) to fix a problem only ~28% of files actually have. Escalating
+      // resolves the restart-bookkeeping case (the reason 128KB exists at all)
+      // without ever touching the tail-read fallback below for most of that 28%.
+      let head = await readFileHead(filePath, smallHeadBuf);
       let foundContent = head ? hasConversation(head) : false;
+      let firstPrompt = head ? extractFirstUserPrompt(head) : undefined;
+      if ((!foundContent || !firstPrompt) && head !== null && fileStat.size > smallHeadBuf.length) {
+        const biggerHead = await readFileHead(filePath, headBuf);
+        if (biggerHead) {
+          head = biggerHead;
+          if (!foundContent) foundContent = hasConversation(head);
+          if (!firstPrompt) firstPrompt = extractFirstUserPrompt(head);
+        }
+      }
+
       let tail: string | null = null;
-      if (!foundContent && fileStat.size > 16384) {
+      // `head === null` (a failed read -- e.g. EMFILE while scanning hundreds of
+      // files) must also get a shot at the tail, not just "file bigger than the
+      // head buffer". Losing this dropped the session from history entirely
+      // instead of giving it a second chance, for any file at or under the head
+      // buffer size whose head read happened to fail.
+      if (!foundContent && (head === null || fileStat.size > headBuf.length)) {
         const tailBuf = Buffer.alloc(32768);
         tail = await readFileTail(filePath, tailBuf, fileStat.size);
         if (tail) foundContent = hasConversation(tail);
       }
       if (!foundContent) continue;
 
-      if (head) firstPrompt = extractFirstUserPrompt(head);
-      if (!firstPrompt && fileStat.size > 65536) {
+      // firstPrompt was already attempted from head (both tiers) above; this is
+      // purely the tail fallback for whatever's left unresolved.
+      if (!firstPrompt && (head === null || fileStat.size > headBuf.length)) {
         if (!tail) {
           const tailBuf = Buffer.alloc(32768);
           tail = await readFileTail(filePath, tailBuf, fileStat.size);
@@ -2794,14 +3016,36 @@ export function registerSessionRoutes(
 
       // COD-145: last (most recent) user prompt lives near the END of the file, so
       // prefer the tail. For large files where no tail was read yet, read one
-      // (mirrors the firstPrompt > 65536 block). Small files fit in `head`, which
-      // then contains the whole transcript — scan it for the last match instead.
-      if (!tail && fileStat.size > 65536) {
+      // (mirrors the firstPrompt > headBuf.length block). Small files fit in `head`,
+      // which then contains the whole transcript — scan it for the last match instead.
+      if (!tail && fileStat.size > headBuf.length) {
         const tailBuf = Buffer.alloc(32768);
         tail = await readFileTail(filePath, tailBuf, fileStat.size);
       }
       const lastPrompt =
         (tail ? extractLastUserPrompt(tail) : undefined) ?? (head ? extractLastUserPrompt(head) : undefined);
+
+      // Automated/SDK-driven invocations (CI review bots, etc.) write transcripts
+      // into the same ~/.claude/projects tree as interactive sessions but were
+      // never something a user can resume into — no PTY, no running process, and
+      // their "conversation" is typically a single one-shot prompt (often with a
+      // full diff embedded, which is exactly why it dwarfs this scanner's read
+      // windows and shows up above as blank or as an identical boilerplate
+      // sentence across many rows). Checked last, so it reuses whatever `head`/
+      // `tail` the prompt extraction above already read rather than triggering
+      // an extra file read. Missing entrypoint (older transcripts) reads as
+      // interactive — fail open, matching every other gating check in this
+      // codebase.
+      //
+      // head and tail are checked independently and merged with "cli wins" (not
+      // a first-truthy-value `??` chain): a large file's head might land on a
+      // non-'cli' message while a real interactive message sits in the tail (or
+      // vice versa), and either one being 'cli' is enough to keep the session.
+      const headEntrypoint = head ? extractTranscriptEntrypoint(head) : undefined;
+      const tailEntrypoint = tail ? extractTranscriptEntrypoint(tail) : undefined;
+      const entrypoint =
+        headEntrypoint === 'cli' || tailEntrypoint === 'cli' ? 'cli' : (headEntrypoint ?? tailEntrypoint);
+      if (entrypoint && isAutomatedEntrypoint(entrypoint)) continue;
 
       out.push({
         sessionId,
@@ -2819,7 +3063,13 @@ export function registerSessionRoutes(
   app.get('/api/history/sessions', async (req) => {
     const query = req.query as { projectKey?: string; offset?: string; limit?: string };
     const projectsDir = join(process.env.HOME || '/tmp', '.claude', 'projects');
-    const headBuf = Buffer.alloc(16384);
+    // scanProjectDir tries smallHeadBuf (16KB, the original size) first for every
+    // file and only escalates to headBuf (128KB) when that wasn't enough — see the
+    // comment at the escalation site in scanProjectDir for why unconditional 128KB
+    // reads were too expensive to keep. 128KB matches the existing precedent
+    // elsewhere in this file (line ~1431).
+    const smallHeadBuf = Buffer.alloc(16384);
+    const headBuf = Buffer.alloc(131072);
     // Multi-user: this scans the host-wide ~/.claude/projects tree, so a non-admin
     // must only see history whose decoded workingDir is inside their own case space.
     // Do NOT trust the caller-supplied projectKey — confine on the decoded path.
@@ -2837,7 +3087,7 @@ export function registerSessionRoutes(
       const offset = Math.max(0, parseInt(query.offset || '0', 10) || 0);
       const limit = Math.min(100, Math.max(1, parseInt(query.limit || '20', 10) || 20));
       const projPath = join(projectsDir, query.projectKey);
-      let all = await scanProjectDir(projPath, query.projectKey, headBuf);
+      let all = await scanProjectDir(projPath, query.projectKey, smallHeadBuf, headBuf);
       // Confine to the caller's workspace (a projectKey maps to a single foreign cwd).
       if (scopeHistory) all = all.filter((r) => isWorkingDirAllowed(user, r.workingDir));
       all.sort((a, b) => new Date(b.lastModified).getTime() - new Date(a.lastModified).getTime());
@@ -2850,7 +3100,7 @@ export function registerSessionRoutes(
       const projectDirs = await fs.readdir(projectsDir);
       for (const projDir of projectDirs) {
         const projPath = join(projectsDir, projDir);
-        const list = await scanProjectDir(projPath, projDir, headBuf);
+        const list = await scanProjectDir(projPath, projDir, smallHeadBuf, headBuf);
         results.push(...list);
       }
     } catch {
@@ -2926,11 +3176,13 @@ export function registerSessionRoutes(
     const history: HistoryInput[] = [];
     try {
       const projectsDir = join(process.env.HOME || '/tmp', '.claude', 'projects');
-      const headBuf = Buffer.alloc(16384);
+      // See the sibling allocation above for why there are two sizes.
+      const smallHeadBuf = Buffer.alloc(16384);
+      const headBuf = Buffer.alloc(131072);
       const projectDirs = await fs.readdir(projectsDir);
       for (const projDir of projectDirs) {
         const projPath = join(projectsDir, projDir);
-        const list = await scanProjectDir(projPath, projDir, headBuf);
+        const list = await scanProjectDir(projPath, projDir, smallHeadBuf, headBuf);
         for (const h of list) {
           history.push({
             sessionId: h.sessionId,

@@ -249,16 +249,28 @@ Ordered most‑to‑least recommended:
 
 ### A. Tailscale serve (recommended)
 
-Bind loopback, let Tailscale front it on your tailnet with a real cert:
+Bind loopback, let Tailscale front it on your tailnet with a real cert. **The
+installer sets this up for you**: choose **Tailscale** at the network-access
+prompt, or retrofit an existing install with:
 
 ```bash
-codeman web --https            # binds 127.0.0.1:3000
-tailscale serve --bg https / http://127.0.0.1:3000
+bash ~/.codeman/app/install.sh tailscale
 ```
 
-Only devices on your tailnet can reach it; Tailscale handles identity. No app
-password and no `0.0.0.0` bind required. (This is the maintainer's production
-setup.)
+The guided flow installs Tailscale if needed, walks through login and the
+tailnet HTTPS-certificates toggle, and configures the equivalent of:
+
+```bash
+codeman web                    # binds 127.0.0.1:3000 (plain HTTP is fine here)
+tailscale serve --bg 3000      # HTTPS at https://<node>.<tailnet>.ts.net
+```
+
+Only devices on your tailnet can reach it; Tailscale handles identity and
+terminates TLS with a real Let's Encrypt certificate (so PWA install and web
+push work). No app password and no `0.0.0.0` bind required. (This is the
+maintainer's production setup.) `CODEMAN_TAILSCALE=1` presets the choice for
+automation; the installer never runs `tailscale serve reset` and never touches
+serve mappings other than `443 -> Codeman's port`.
 
 ### B. Authenticated cloudflared tunnel + password
 
@@ -484,7 +496,7 @@ production layout (`~/.codeman`, `-L codeman`, port 3000).
 Docker cases (1.4.0) run a session inside a per‑case container instead of on the host. The security posture:
 
 - **Hardened create flags, always** — `--cap-drop ALL`, `--security-opt no-new-privileges`, `--pids-limit` (fork‑bomb guard), `--memory` == `--memory-swap` (a real OOM cap), `--init`, and non‑root: `--user <hostUid>:0` on Linux (host uid → workspace files stay host‑owned; GID 0 keeps `$HOME` writable), `--userns=keep-id` on rootless Podman. **Never** `--privileged`, and **never** the docker socket — the pure builder in `docker-hosts.ts` cannot emit them and the schema cannot represent them.
-- **Credentials never enter an image** — the convenient default bind‑mounts host cred dirs (`~/.claude`, `~/.codex`, `~/.gemini`, `~/.config/{gcloud,opencode}`) read‑write. Bind mounts are physically excluded from `docker commit`, so exported images are secret‑free. API‑key CLIs get their key as an exec‑time NAME‑ONLY `--env OPENAI_API_KEY` (no `=value`, no `ps` leak, never committed); a create‑time `-e` for a secret is never used. The **sealed** profile (`mountCredentials:false` + `network:none`) drops the host mounts; full‑image export is then refused (an in‑container login would ride the committed layer) unless a pre‑commit scrub is opted into.
+- **Credentials never enter an image** — the convenient default bind‑mounts host cred dirs (`~/.claude`, `~/.codex`, `~/.gemini` — which also carries Antigravity's `antigravity-cli/` state — and `~/.config/{gcloud,opencode}`) read‑write. Bind mounts are physically excluded from `docker commit`, so exported images are secret‑free. API‑key CLIs get their key as an exec‑time NAME‑ONLY `--env OPENAI_API_KEY` (no `=value`, no `ps` leak, never committed); a create‑time `-e` for a secret is never used. The **sealed** profile (`mountCredentials:false` + `network:none`) drops the host mounts; full‑image export is then refused (an in‑container login would ride the committed layer) unless a pre‑commit scrub is opted into.
 - **Blast radius — accept it explicitly** — the convenient profile mounts an arbitrary host workspace RW plus the host credential dirs RW into a network‑enabled container, so container‑run agent code can read/modify those host trees and reach the network at once. Still a net improvement over today's on‑host `--dangerously-skip-permissions` execution; use the sealed profile for genuinely untrusted work.
 - **Import is untrusted‑bundle‑safe** — `/api/docker-cases/import` validates the manifest + per‑member SHA‑256 before extraction, rejects absolute / `..` tar members (traversal guard), and re‑tags the loaded image into a quarantined namespace so it can never overwrite `codeman/agent:base` or a pre‑existing tag.
 - **Host guard & the bridge‑hooks listener** — in‑container hook callbacks carry `Host: host.docker.internal` / `host.containers.internal`; both are on the always‑on host‑header allowlist (`DOCKER_HOST_GATEWAY_ALIASES`) and resolve to the host only from inside a container netns, so they are not a browser DNS‑rebinding surface. On a loopback‑only server, in‑container hooks are opt‑in via `CODEMAN_DOCKER_BRIDGE_HOOKS=1`, which binds a SECOND listener on the docker bridge gateway serving **only** the hook endpoints (every other path → `403`) into the same hook‑secret‑gated pipeline. The bridge is host‑internal (containers + host), not the LAN, so it does not widen network exposure; the hook secret is bind‑mounted read‑only and referenced by path.

@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { relative, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -50,5 +51,23 @@ describe('frontend public asset tooling', () => {
       );
       expect(source, `${path} bypasses TerminalInputController transport`).not.toContain('._sendInputAsync(');
     }
+  });
+
+  it('uses the same message wrapper for brief and full response views', () => {
+    const appJs = readFileSync(resolve(repoRoot, 'src/web/public/app.js'), 'utf8');
+
+    expect(appJs).toContain("body.appendChild(this._buildResponseViewerMessage(lastResponse, 'assistant'");
+    expect(appJs).toContain('body.appendChild(this._buildResponseViewerMessage(msg.text, msg.role, agentLabel));');
+    expect(appJs).toContain("div.className = 'rv-message ' + (isUser ? 'rv-msg-user' : 'rv-msg-assistant');");
+    expect(appJs).toContain("renderedText.className = 'rv-text';");
+  });
+
+  it('runs the public asset check script', () => {
+    expect(() => {
+      execFileSync('npm', ['run', 'check:public-assets', '--silent'], {
+        cwd: repoRoot,
+        stdio: 'pipe',
+      });
+    }).not.toThrow();
   });
 });

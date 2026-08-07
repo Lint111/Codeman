@@ -314,19 +314,23 @@
           <h1 class="welcome-title">Codeman</h1>
           <p class="welcome-desc">Manage AI Coding tools in persistent tmux sessions.</p>
           <div class="welcome-actions">
-            <button class="welcome-btn welcome-btn-claude" onclick="app.setRunMode('claude'); app.runClaude()">
+            <button class="welcome-btn welcome-btn-claude" id="welcomeClaudeBtn" style="display: none;" onclick="app.setRunMode('claude'); app.runClaude()">
               <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>
               Run Claude Code
             </button>
-            <button class="welcome-btn welcome-btn-tunnel" id="welcomeTunnelBtn" onclick="app.toggleTunnelFromWelcome()">
+            <button class="welcome-btn welcome-btn-tunnel" id="welcomeTunnelBtn" style="display: none;" onclick="app.toggleTunnelFromWelcome()">
               <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
               Cloudflare Tunnel
             </button>
-            <button class="welcome-btn welcome-btn-opencode" onclick="app.setRunMode('opencode'); app.runOpenCode()">
+            <button class="welcome-btn welcome-btn-opencode" id="welcomeOpencodeBtn" style="display: none;" onclick="app.setRunMode('opencode'); app.runOpenCode()">
               <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>
               Run OpenCode
             </button>
-            <button class="welcome-btn welcome-btn-gemini" onclick="app.setRunMode('gemini'); app.runGemini()">
+            <button class="welcome-btn welcome-btn-antigravity" id="welcomeAntigravityBtn" style="display: none;" onclick="app.setRunMode('antigravity'); app.runAntigravity()">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+              Run Antigravity
+            </button>
+            <button class="welcome-btn welcome-btn-gemini" id="welcomeGeminiBtn" style="display: none;" onclick="app.setRunMode('gemini'); app.runGemini()">
               <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>
               Run Gemini
             </button>
@@ -382,6 +386,12 @@
           <button class="welcome-ralph-link" onclick="app.showRalphWizard()">Start Ralph Loop &rarr;</button>
         </div>
       </div>
+
+      <!-- Mobile Overview (phone home screen, shown in place of the welcome
+           overlay when the "C" logo is tapped). Ships `hidden`: only
+           mobile-overview.js removes it, and only when the phone gate passes, so
+           desktop (which never loads mobile.css) can never render it. -->
+      <div class="mobile-overview" id="mobileOverview" hidden></div>
     </main>
 
     <!-- Project Insights Panel (shows file-viewing Bash commands) -->
@@ -455,11 +465,18 @@
               <button type="button" class="file-preview-mode-btn" data-mode="full" onclick="app.setRepositoryDiffMode('full')" aria-pressed="false">Full</button>
             </div>
             <button type="button" class="btn-icon-sm" id="filePreviewOpenEditorBtn" onclick="app.openRepositoryDiffInEditor()" title="Open diff in VS Code" aria-label="Open diff in VS Code" hidden>&#x2197;</button>
+            <button class="btn-icon-sm file-preview-edit-btn" id="filePreviewEditBtn" onclick="app.enterFilePreviewEdit()" title="Edit file" aria-label="Edit file" hidden><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5z"/></svg></button>
             <button type="button" class="btn-icon-sm" onclick="app.copyFilePreviewContent()" title="Copy content" aria-label="Copy content">&#x2398;</button>
             <button type="button" class="btn-icon-sm" onclick="app.closeFilePreview()" title="Close" aria-label="Close preview">&times;</button>
           </div>
         </div>
         <div class="file-preview-body" id="filePreviewBody"></div>
+        <div class="file-preview-editbar" id="filePreviewEditBar" hidden>
+          <span class="file-preview-dirty" id="filePreviewDirty" hidden>Unsaved changes</span>
+          <span class="file-preview-editbar-spacer"></span>
+          <button class="file-preview-editbar-btn" onclick="app.cancelFilePreviewEdit()">Cancel</button>
+          <button class="file-preview-editbar-btn file-preview-editbar-btn--save" id="filePreviewSaveBtn" onclick="app.saveFilePreviewEdit()" disabled>Save</button>
+        </div>
         <div class="file-preview-footer" id="filePreviewFooter"></div>
       </div>
     </div>
@@ -502,6 +519,9 @@
               </button>
               <button class="run-mode-option" data-mode="gemini" onclick="app.setRunMode('gemini')">
                 <span class="run-mode-dot gemini"></span>Gemini
+              </button>
+              <button class="run-mode-option" data-mode="antigravity" onclick="app.setRunMode('antigravity')">
+                <span class="run-mode-dot antigravity"></span>Antigravity
               </button>
               <div class="run-mode-sep"></div>
               <button class="run-mode-option" data-mode="shell" onclick="app.setRunMode('shell')">
@@ -669,6 +689,8 @@
           <section class="shortcut-section">
             <h4>Terminal</h4>
             <div class="shortcuts-grid">
+              <div><kbd>Ctrl</kbd>+<kbd>C</kbd></div><div>Copy Selection (interrupts when nothing is selected)</div>
+              <div><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>C</kbd></div><div>Copy Selection</div>
               <div><kbd>Ctrl</kbd>+<kbd>L</kbd></div><div>Clear Terminal</div>
               <div><kbd>Ctrl</kbd>+<kbd>+</kbd></div><div>Increase Font</div>
               <div><kbd>Ctrl</kbd>+<kbd>-</kbd></div><div>Decrease Font</div>
@@ -772,6 +794,7 @@
                 <option value="opencode">OpenCode</option>
                 <option value="codex">Codex</option>
                 <option value="gemini">Gemini</option>
+                <option value="antigravity">Antigravity</option>
               </select>
             </div>
             <div class="form-row"><label>Working Directory</label><input type="text" id="schWorkingDir" placeholder="/absolute/path"></div>
@@ -1335,6 +1358,20 @@
                   </optgroup>
                 </select>
               </div>
+              <div class="settings-item settings-item-multiline" title="How new session tabs, the terminal pane, agent windows and their connection lines appear. This device only. For per-surface control and a live preview, add ?animlab=1 to the URL.">
+                <div class="settings-item-text">
+                  <span class="settings-item-label">Entrance Animations</span>
+                  <span class="settings-item-desc">How new tabs, panes and agent windows arrive</span>
+                </div>
+                <select id="appSettingsEntranceAnim" class="form-select settings-inline-select">
+                  <option value="legacy">Off (default)</option>
+                  <option value="terminal">Terminal (CRT)</option>
+                  <option value="beamdown">Beam down</option>
+                  <option value="quiet">Quiet</option>
+                  <option value="playful">Playful</option>
+                  <option value="custom">Custom (set in the lab)</option>
+                </select>
+              </div>
               <div class="settings-item" id="appSettingsWebglRendererItem" title="Use the GPU-accelerated WebGL terminal renderer (desktop only). Turn off to force the DOM renderer if you hit GPU glitches. Codeman also auto-falls-back to the DOM renderer after repeated GPU stalls.">
                 <span class="settings-item-label">WebGL Renderer</span>
                 <label class="switch switch-sm">
@@ -1499,6 +1536,16 @@
                 <span class="settings-item-label">Redraw Terminal Button</span>
                 <label class="switch switch-sm">
                   <input type="checkbox" id="appSettingsShowRedrawButton">
+                  <span class="slider"></span>
+                </label>
+              </div>
+
+              <!-- Phone Section (only meaningful under 430px, hidden elsewhere by settings-ui.js) -->
+              <div class="settings-section-header" id="appSettingsPhoneSection">Phone</div>
+              <div class="settings-item" id="appSettingsMobileOverviewItem" title="On phones, the C logo opens a session overview (needs you / spaces / idle) instead of the welcome screen">
+                <span class="settings-item-label">Overview Home Screen</span>
+                <label class="switch switch-sm">
+                  <input type="checkbox" id="appSettingsMobileOverview" checked>
                   <span class="slider"></span>
                 </label>
               </div>
@@ -2228,7 +2275,7 @@
             <div class="form-row">
               <label>Image</label>
               <input type="text" id="dockerImage" placeholder="codeman/agent:base" autocomplete="off" autocapitalize="off" spellcheck="false">
-              <span class="form-hint">Build it once with <code>node scripts/build-agent-image.mjs</code>. Contains node + claude/codex/gemini + tmux.</span>
+              <span class="form-hint">Build it once with <code>node scripts/build-agent-image.mjs</code>. Contains node + claude/codex/gemini/opencode/agy + tmux.</span>
             </div>
             <div class="form-row">
               <label>Network</label>
@@ -2716,6 +2763,8 @@
   <script defer src="admin-ui.js"></script>
   <script defer src="session-ui.js"></script>
   <script defer src="webview-tabs.js"></script>
+  <script defer src="mobile-overview.js"></script>
+  <script defer src="entrance-animations.js"></script>
   <script defer src="ralph-wizard.js"></script>
   <script defer src="api-client.js"></script>
   <script defer src="subagent-windows.js"></script>

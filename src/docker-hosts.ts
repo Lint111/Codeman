@@ -143,6 +143,7 @@ export function defaultDockerCommandForMode(mode: SessionMode): string {
     opencode: 'exec opencode',
     codex: 'exec codex',
     gemini: 'exec gemini',
+    antigravity: 'exec agy',
   };
   return commands[mode as DockerCommandMode] || commands.shell;
 }
@@ -595,6 +596,9 @@ interface CredStorePolicy {
 
 const CRED_STORES: CredStorePolicy[] = [
   { rel: '.codex', shareDirs: ['sessions'], shareFiles: ['history.jsonl'], seedFiles: ['auth.json', 'config.toml'] },
+  // Also covers Antigravity: `agy` nests its whole state (auth `jetski_state.pbtxt`,
+  // `conversations/`, `knowledge/`) under `~/.gemini/antigravity-cli/`, so it needs no
+  // entry of its own. There is no `~/.antigravity` credential dir to add.
   { rel: '.gemini', seedWhole: true },
   { rel: '.config/gcloud', seedWhole: true },
   { rel: '.config/opencode', seedWhole: true },

@@ -114,6 +114,7 @@
     'Run Claude Code': '运行 Claude Code',
     'Run OpenCode': '运行 OpenCode',
     'Run Gemini': '运行 Gemini',
+    'Run Antigravity': '运行 Antigravity',
     'Run Shell': '运行 Shell',
     'Select AI backend': '选择 AI 后端',
     'Create New Case': '新建案例',
@@ -364,6 +365,26 @@
     'Show Shortcuts': '显示快捷键',
     'Full shortcut reference': '完整快捷键参考',
 
+    // Mobile overview (phone home screen)
+    'Needs you': '需要你',
+    'Current sessions': '当前会话',
+    'Past sessions': '历史会话',
+    'Show all past sessions': '显示全部历史会话',
+    'Show fewer': '收起',
+    'Choose what to run': '选择运行方式',
+    'Web / URL': '网页 / 链接',
+    'Add URL…': '添加链接…',
+    'Nothing running. Hit Run to start something.': '当前没有运行中的会话。点击“运行”开始。',
+    'No past conversations yet': '尚无历史对话',
+    'Loading…': '加载中…',
+    // Status pills are deliberately NOT listed: they are single generic words
+    // ("idle", "done", "error") that also appear as state strings elsewhere, so
+    // they carry data-i18n-skip in the DOM instead of a translation entry here.
+    'Overview Home Screen': '概览主页',
+    'On phones, the C logo opens a session overview (needs you / spaces / idle) instead of the welcome screen':
+      '在手机上，点击 C 图标打开会话概览（需要你 / 空间 / 空闲），而不是欢迎页',
+    Phone: '手机',
+
     // Session/case dialogs
     'Session Options': '会话选项',
     'Session Name': '会话名称',
@@ -445,6 +466,7 @@
     'Respawn Blocked': '重生已阻止',
     'Task Complete': '任务完成',
     'Copied to clipboard': '已复制到剪贴板',
+    'Failed to copy': '复制失败',
     'Checking…': '正在检查…',
     'Starting…': '正在启动…',
     'Starting update…': '正在开始更新…',
@@ -594,6 +616,9 @@
     'Select a run to view its agents': '选择一次运行以查看其智能体',
     'Source type filter': '来源类型筛选',
     'Copy content': '复制内容',
+    'Edit file': '编辑文件',
+    'Unsaved changes': '未保存的更改',
+    Saved: '已保存',
     'Export as JSON': '导出为 JSON',
     'Export as Markdown': '导出为 Markdown',
     'Mark all read': '全部标为已读',

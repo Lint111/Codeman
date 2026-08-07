@@ -58,16 +58,61 @@ export async function writeRemoteCases(configDir: string, cases: RemoteCase[]): 
   await writeJsonArray(configDir, remoteCasesPath(configDir), cases);
 }
 
+/**
+ * The remote user's login shell, defaulted and quoted.
+ *
+ * The default is belt-and-braces, not a live bug: an empty `$SHELL` would expand
+ * to `exec  -i -l`, which the shell reads as `exec -i` — "not found", pane dead on
+ * arrival, the #208 failure all over again (verified: `sh -c 'exec $SHELL -i -l'`
+ * with SHELL unset prints `exec: -i: not found`). In practice tmux always exports
+ * SHELL into a pane from its own `default-shell` option, so the command as USED
+ * here is safe either way (also verified). The default matters because these
+ * strings are the seed values a per-host `commands.*` override is edited from, and
+ * nothing constrains where an edited one ends up running. Quoted for a shell path
+ * containing spaces. `/bin/sh` exists on every POSIX host.
+ */
+const REMOTE_LOGIN_SHELL = '"${SHELL:-/bin/sh}"';
+
+/**
+ * Run `command` through the remote user's interactive login shell, so per-user
+ * PATH entries (~/.local/bin, ~/.opencode/bin, …) are resolved before the CLI name
+ * is looked up. ssh's remote-command execution is neither interactive nor login,
+ * so a bare `exec claude` sees only sshd's minimal default PATH and dies with
+ * "command not found" (exit 127).
+ *
+ * Shells that take neither flag (nushell, elvish, …) cannot be detected from here
+ * the way `loginShellArgs()` detects them locally, since the shell is whatever the
+ * REMOTE passwd says. A host like that is what the per-host `commands.*` override
+ * is for.
+ */
+export function remoteLoginShellCommand(command: string): string {
+  return `exec ${REMOTE_LOGIN_SHELL} -i -l -c ${shellescape(command)}`;
+}
+
 export function defaultRemoteCommandForMode(mode: SessionMode): string {
+  // Agent CLIs (claude/opencode/codex/gemini/antigravity) are typically installed
+  // under per-user paths like ~/.local/bin or ~/.opencode/bin, added to PATH only by
+  // the remote user's interactive-login shell startup files (~/.zshrc etc.). ssh's
+  // remote-command execution is neither interactive nor login, so a bare `exec
+  // claude` sees only sshd's minimal default PATH and fails with "command not
+  // found" (exit 127) — confirmed via `tmux capture-pane` on the
+  // remain-on-exit-preserved dead pane. Route through `$SHELL -i -l -c`, the same
+  // fix already used for shell mode below, so PATH is fully resolved before the
+  // CLI name is looked up.
   const commands: Record<RemoteCommandMode, string> = {
-    shell: 'exec bash -l',
+    // $SHELL, not a hardcoded bash: sshd sets it from the remote user's
+    // /etc/passwd entry, so this launches their actual login shell (zsh,
+    // fish, etc.). -i -l so it sources rc files (~/.zshrc etc.), matching
+    // the local shell-mode launch.
+    shell: `exec ${REMOTE_LOGIN_SHELL} -i -l`,
     // Mirror the LOCAL claude default so the remote agent runs non-interactively
     // (no trust-folder/permission prompt that nothing on the remote answers). The
     // per-host `commands.claude` override stays the escape hatch.
-    claude: 'exec claude --dangerously-skip-permissions',
-    opencode: 'exec opencode',
-    codex: 'exec codex',
-    gemini: 'exec gemini',
+    claude: remoteLoginShellCommand('claude --dangerously-skip-permissions'),
+    opencode: remoteLoginShellCommand('opencode'),
+    codex: remoteLoginShellCommand('codex'),
+    gemini: remoteLoginShellCommand('gemini'),
+    antigravity: remoteLoginShellCommand('agy'),
   };
   return commands[mode as RemoteCommandMode] || commands.shell;
 }
@@ -208,6 +253,69 @@ export async function checkRemoteTmuxAvailable(
       ok: false,
       error: `remote host ${host.host} needs tmux installed for durable remote sessions`,
     };
+  }
+}
+
+/**
+ * The CLI binary each session mode runs on the remote host. Antigravity's
+ * binary is `agy` (the mode name is not the command); shell has no CLI to
+ * probe, so it is absent.
+ */
+const REMOTE_CLI_BIN: Partial<Record<SessionMode, string>> = {
+  claude: 'claude',
+  opencode: 'opencode',
+  codex: 'codex',
+  gemini: 'gemini',
+  antigravity: 'agy',
+};
+
+/**
+ * Build the SSH command that reads the remote CLI's version (`claude --version`
+ * on the remote host). The version query is routed through
+ * `remoteLoginShellCommand` (the SAME `$SHELL -i -l -c` wrapper the real
+ * launch uses), because agent CLIs live on PATH only after the remote user's
+ * interactive-login startup files run (see defaultRemoteCommandForMode); a bare
+ * `claude --version` over ssh exits 127. Connection options come from the
+ * shared `buildSshConnectionArgs`, so the probe reaches exactly the hosts the
+ * launch can reach. Returns null for modes with no CLI (shell).
+ */
+export function buildRemoteCliVersionProbeCommand(
+  host: Pick<RemoteHost, 'username' | 'host' | 'port'> & RemoteSshOptions,
+  mode: SessionMode
+): string | null {
+  const bin = REMOTE_CLI_BIN[mode];
+  if (!bin) return null;
+  return [
+    ...buildSshConnectionArgs(host),
+    remoteSshTarget(host),
+    shellescape(remoteLoginShellCommand(`${bin} --version`)),
+  ].join(' ');
+}
+
+/**
+ * Read the CLI version installed ON THE REMOTE HOST. Feeds Session.cliVersion
+ * for remote sessions: the deterministic local probe deliberately skips them
+ * (it would report the LOCAL host's claude), and the startup-banner scrape is
+ * unreliable (newer Claude Code builds print no banner; resumed sessions never
+ * do), which left cliVersion undefined and silently disabled wheel-forwarding
+ * to the CLI transcript (residual #154, noted in the #205 analysis). The
+ * version is parsed as the first semver in stdout, never raw output: an
+ * interactive-login shell may echo rc-file noise around it. Returns undefined
+ * on any failure. No-op under VITEST (mirrors checkRemoteTmuxAvailable).
+ */
+export async function probeRemoteCliVersion(
+  host: Pick<RemoteHost, 'username' | 'host' | 'port'> & RemoteSshOptions,
+  mode: SessionMode
+): Promise<string | undefined> {
+  if (process.env.VITEST) return undefined;
+  const command = buildRemoteCliVersionProbeCommand(host, mode);
+  if (!command) return undefined;
+  try {
+    const { stdout } = await execAsync(command, { timeout: 15_000 });
+    const match = stdout.match(/\d+\.\d+\.\d+/);
+    return match ? match[0] : undefined;
+  } catch {
+    return undefined;
   }
 }
 

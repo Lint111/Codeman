@@ -21,6 +21,8 @@ export class MockSession extends EventEmitter {
   writeBuffer: string[] = [];
   terminalBuffer: string = '';
   private _terminalGeneration = 0;
+  /** Mirrors Session.lastSubmitAt — the response viewer credits history entries by it. */
+  lastSubmitAt: number = 0;
 
   private _muxName: string | null = null;
 

@@ -1,5 +1,194 @@
 # aicodeman
 
+## 1.12.0
+
+### Minor Changes
+
+- Terminal scrollback overhaul (issue #205), fixing every reported scroll failure across shell and CLI sessions, desktop and mobile:
+  - Shell, OpenCode and Antigravity sessions finally have working scrollback: tmux's own client-side alternate-screen switch is stripped for tmux-backed sessions (narrow strip: alt-screen toggles only, keeping `clear`'s 3J and mouse DECSETs), so xterm stays in the normal buffer instead of a scrollback-less alt buffer where the wheel turned into shell history cycling and touch scrolling did nothing. Direct-PTY fallback sessions are untouched so fullscreen apps (vim/less/htop) keep the alt screen there.
+  - The wheel listener now runs in capture phase and owns the scroll: xterm's internal vscode-style viewport scroller consumed wheel events whenever local scrollback existed (and goes deaf entirely after a tab switch or replay resets the terminal), which silently killed wheel forwarding, made scrolling break after reload/tab switches, and let the CLI's input box scroll away. Local scrolling goes through buffer-level scrollLines and keeps working after resets; mouse-tracking apps and alternate-buffer sessions are passed through untouched.
+  - Wheel AND touch scrolling now forward to the CLI's own transcript for Codex and Claude 2.1.187+, at any scroll position (the viewport snaps home first), so the input box stays pinned on desktop and phones alike. Shift+wheel and the "Wheel scrolls local history" setting still pin local scrollback.
+  - Smooth scrolling: local wheel scrolling glides with an ease-out animation (fractional line accumulation, so slow trackpad drags track the finger instead of running ahead).
+  - Full tmux history on demand: the full-scrollback replay is now per session instead of once per page load, and scrolling up at the top of the buffer re-pulls the complete tmux history, recovering everything tmux's repaint bursts or tab switches removed from the browser's copy.
+  - Firefox wheel speed: wheel deltas are normalized by deltaMode (Firefox reports line units, previously read as pixels and slowed ~4x).
+  - Remote SSH Claude sessions now probe the CLI version over ssh (same connection options and login-shell wrapper as the real launch), so wheel forwarding works for them too instead of silently staying off.
+
+  Docs: scrollback analysis and fix plan recorded in docs/, architecture invariants updated (strip flavors, capture-phase wheel ownership, per-session full-history replay); docker agent-image rebuild warning and integration-guide link fixes from the preceding docs commits.
+
+## 1.11.2
+
+### Patch Changes
+
+- Make Antigravity (`agy`) a first-class CLI everywhere, and stop presenting Gemini CLI as a consumer product now that it is enterprise-only.
+
+  Antigravity was already wired into the session layer, schemas, run-mode menu and remote/Docker command maps, but the surfaces around it were never updated. Gemini keeps full support; Antigravity now sits beside it.
+
+  Fixes:
+  - **Docker cases with `mode: 'antigravity'` were broken.** `docker/agent.Dockerfile` installs its CLIs from npm, and `agy` is not an npm package, so the binary was never in the image and the container died on command-not-found. It now gets its own installer step. The `--dir /usr/local/bin` flag is load-bearing: the installer's default `$HOME/.local/bin` resolves to root's home at build time and would be unreachable by the `agent` user the container runs as. Note the binary is roughly 190MB, making it the largest layer in the image, so rebuild with `node scripts/build-agent-image.mjs` when convenient.
+  - **Welcome screen** gained a "Run Antigravity" action, gated on `agy` being present like the other CLI buttons, styled with the same cyan identity as the toolbar run button and run-mode dot.
+  - **`install.sh`** now detects `agy` (search paths mirroring `antigravity-cli-resolver.ts`), counts it as a satisfying AI CLI so an Antigravity-only box is not told it has none, and recommends it instead of Gemini in the install hints.
+
+  Documentation corrections where it had become factually wrong: `architecture-invariants.md` described `isExternalCliMode()` as opencode/codex/gemini when the code has included antigravity for some time, said "all three modes", and omitted `ANTIGRAVITY_*` from the env-prefix allowlist row; the `agentType` enum in `cron-guide.md`, `SessionMode` in `cron-discovery.md`, and `RemoteCommandMode` in `remote-sessions.md` were all stale.
+
+  Also updated both READMEs (five CLIs, Gemini marked enterprise-only), the `antigravity` npm keyword, and comment drift in eight places. Test coverage added for the new welcome button.
+
+  Antigravity stores its state under `~/.gemini/antigravity-cli/` rather than a `~/.antigravity` directory, so the existing `.gemini` Docker credential seed already covers it. That is now recorded in a code comment so no dead configuration gets added later.
+
+- b982c5d: Keep the brief Response Viewer output inside the same message card and Markdown wrapper used by the full conversation view, so opening the viewer without clicking More preserves the same readable formatting.
+
+## 1.11.1
+
+### Patch Changes
+
+- fix(history): Past Sessions data quality, and gate the phone run picker on CLI availability
+
+  **Past Sessions data quality (#215).** Three bugs in the transcript scanner behind
+  the Cmd+K Session Manager and the phone overview's PAST SESSIONS list:
+  - Automated/SDK-driven transcripts (CI review bots and other tooling, which Claude
+    Code stamps with a non-`cli` `entrypoint`) were listed alongside real interactive
+    sessions even though they were never resumable. They are now excluded. Detection
+    scans every entrypoint-bearing message rather than stopping at the first, so a
+    transcript that began under an older Claude Code build and only later picked up a
+    non-`cli` entrypoint is no longer wrongly hidden.
+  - A resumed session could show a same-directory sibling's preview text as its own.
+    The `workingDir` backfill in `mergeUnifiedSessions()` now only ever applies to rows
+    that have no history entry of their own, so it can no longer overwrite a row's real
+    content with another conversation's.
+  - Sessions restarted many times accumulated enough bookkeeping lines to push the real
+    first prompt past the scanner's 16KB head-read window, leaving a blank row. The read
+    is now two-tier: 16KB first, escalating to 128KB only when that was not enough, which
+    is both correct and cheaper than reading 128KB unconditionally (measured on a real
+    transcript tree: 36% fewer bytes read, roughly 17.5% faster than the unconditional
+    version). Also restores the tail-read fallback for a file whose head read failed
+    outright (for example `EMFILE` while scanning hundreds of files), which had been
+    silently dropping the session from history.
+
+  Follow-up hardening on top of the above: the automated-transcript exclusion now
+  blocklists the SDK entrypoint shape (`sdk`, `sdk-cli`, `sdk-py`) instead of allowlisting
+  the exact value `cli`. Because the check hides rows, an allowlist failed closed on any
+  value Claude Code has not shipped yet: a future rename of the interactive entrypoint,
+  or a second interactive host, would have blanked the entire Past Sessions list with
+  nothing in the UI to explain it. An unrecognized automated entrypoint now costs a few
+  noisy rows instead, which is the annoyance this filter set out to fix rather than a
+  broken feature.
+
+  **Phone overview run picker (#214).** The "C" logo home screen's Run picker listed all
+  six backends regardless of what was installed, so tapping an uninstalled one produced a
+  failed launch instead of the entry simply not being offered. It is now gated on
+  `isCliAvailable()` exactly like the desktop toolbar's run-mode dropdown (shell exempt,
+  since it has no external CLI dependency and keeps the menu from ever being empty). The
+  picker is a hardcoded duplicate of the toolbar menu rather than a shared render, which
+  is why it never picked up the earlier gating work; a test now asserts that every mode
+  the picker offers is gated, so a newly added backend cannot silently drift again.
+
+- 73315bc: fix(web): stop the Claude response viewer from following another session's conversation
+
+  The viewer re-derived a pane's live conversation by taking the newest
+  `~/.claude/history.jsonl` entry for the pane's cwd. A cwd is shared with every
+  other Codeman tab on it, with tabs long since closed, and with any plain
+  `claude` run in the user's own terminal, so the eye followed whichever of those
+  was typed into last — and the adoption was written back to the session, so the
+  mispin persisted. Entries are now credited to a pane only when they land within
+  10s of that pane's own Enter and no other pane on the cwd submitted closer, the
+  same last-submit correlation the Codex locator already uses.
+
+  That correlation also has to survive a restart. `start()` resets
+  `claudeSessionId` to the launch id even when re-attaching to a mux session whose
+  CLI has since moved on via `/clear`, so a recovered pane pointed the viewer at
+  its pre-`/clear` transcript — and with the anchor itself living only in memory,
+  nothing corrected it until the user happened to type again. `lastSubmitAt` is
+  now persisted in `SessionState` and restored on boot recovery, so the viewer
+  re-derives the live conversation on its first poll.
+
+## 1.11.0
+
+### Minor Changes
+
+- Two user-facing features since 1.10.0.
+
+  **Terminal: Ctrl+C copies the selection, interrupts when nothing is selected** (#211). Copying from the terminal previously worked only through the browser context menu: xterm turns Ctrl+C into 0x03 and cancels the keydown, so the muscle-memory copy failed silently and read as "no copy-paste at all". With a selection, Ctrl+C now copies it, shows the "Copied to clipboard" toast, clears the selection and sends nothing to the PTY; with no selection it falls through unchanged, so the interrupt is intact. Ctrl+Shift+C is an explicit copy chord that never interrupts. The shortcut is a normal registry entry (`copy-selection`), so it can be rebound or disabled in App Settings, and disabling it restores plain always-interrupt Ctrl+C. Copy goes through the Clipboard API with a hidden-textarea fallback, so it also works on plain-HTTP LAN installs.
+
+  **File Viewer: edit mode for text files** (#212). The file-preview overlay can now edit workspace text files in place, phone-first: `GET /api/sessions/:id/file-content?edit=1` reads for edit without the 500-line preview truncation (saving a truncated buffer would silently delete the rest) and returns a sha256 hash plus the detected EOL; `PUT /api/sessions/:id/file-content` saves. Edit-in-place only: there is no O_CREAT anywhere in the handler, so "never create, never delete" is structural. Confinement inherits the read path (realpath plus workspace boundary, ownership scoping) and adds sensitive-path and attachment-guard blocklists, a `.git/` subtree deny, and an extension allowlist (`svg` and `env` deliberately excluded). Optimistic concurrency is by content hash, so a file changed on disk mid-edit returns 409 with an overwrite option rather than clobbering. Writes are atomic (`wx` temp, fchmod, fsync, rename) which closes the validate-then-write TOCTOU window and cannot follow a pre-existing symlink. Binary and latin-1 content are refused via a NUL sniff plus a UTF-8 round-trip compare, and EOL is re-applied server-side so a textarea's LF normalization cannot turn a two-line edit of a CRLF file into a whole-file diff.
+
+## 1.10.0
+
+### Minor Changes
+
+- Codeman 1.10.0.
+
+  **Every surface that offers a CLI now checks the CLI is actually there** (#200, #201). The welcome-screen run buttons, the run-mode dropdown and the App Settings "Codex CLI" tab used to be shown unconditionally, so picking one on a box without the binary spawned a session that errored out immediately. All of them now gate on a single server-injected availability object covering Claude, OpenCode, Codex, Gemini, Antigravity and cloudflared, so nothing flickers in after paint and the dropdown costs no round trips to open. Shell is never gated, which is what keeps the menu non-empty on a box with nothing installed, and unknown availability reads as available so a stale page can never leave a working install with nothing to click. Adds `isClaudeAvailable()` and `GET /api/claude/status`, the one CLI that had no availability check despite being the default. The Cloudflare Tunnel welcome button and its scan-to-connect QR are gated on `cloudflared` rather than shown regardless.
+
+  **Shell and remote-SSH sessions now launch a real login shell** (#209, #210). Local shell tabs match what tmux itself does for a pane with no `default-command`, picking up the `/etc/profile` and `/etc/profile.d/*` entries a systemd `--user` service never sourced. On remote SSH, `claude`/`opencode`/`codex`/`gemini`/`agy` are routed through the remote user's interactive login shell, fixing agent CLIs that silently failed with "command not found" because ssh's remote-command execution sees only sshd's minimal default PATH and not the `~/.local/bin` or `~/.opencode/bin` entries where those CLIs actually live. Shell mode uses the remote user's real shell instead of hardcoded bash. The login flags are applied only to shells verified to accept them, so an exotic passwd entry (nushell, elvish, xonsh) cannot produce a dead pane on arrival.
+
+  **A crashed remote pane is kept for diagnosis** (#210), which is how the PATH failure above was found: it previously destroyed the pane, the window and the whole remote session on exit, tearing the local ssh attach down with it and leaving a flap loop with no evidence. Scoped to `remain-on-exit failed`, so a clean `exit` still tears the session down and only a non-zero exit strands anything, and applied last in the tmux command chain so a remote tmux older than 3.2 cannot drop the other session options with it.
+
+  **Resumed sessions under a hidden directory get the right working directory** (#202). Claude Code's project-key encoder maps both `/` and `.` to `-`, and the decoder could not reconstruct a dot-prefixed component, so every session under `~/.codeman` (or any project nested beneath any dotdir) silently resolved to bare `$HOME`. The wrong `workingDir` then propagated into `state.json` and everything trusting it: CLAUDE.md lookup, paste-image directory, subagent and image watchers. A same-named non-dot sibling could also produce a doubled-slash path that failed every later string comparison.
+
+  **Launching a session no longer wipes the terminal you are looking at** (#180). All six run modes route through the shared ownership helpers instead of clearing and writing into whatever session happened to be active, Antigravity included.
+
+  **Codex terminal animations are configurable** (#181), and the App Settings "Codex CLI" tab appears only where the `codex` binary resolves, since both settings on it are handed to `codex` at launch.
+
+## 1.9.9
+
+### Patch Changes
+
+- Two bug fixes.
+
+  **Plain shell sessions could not start when the server process had no `SHELL` (#208).** The tmux pane command for `mode: 'shell'` was the literal string `$SHELL`. That string is embedded in the `bash -c "..."` argument of the `respawn-pane` line, which is run through `/bin/sh -c`, so it was expanded by the _server_ process's shell against the _server_ process's environment rather than inside the pane. Containers and system-level systemd units do not set `SHELL`, so it expanded to nothing and the pane command ended in a dangling `&&`, giving `bash: -c: line 1: syntax error: unexpected end of file` and a pane that died instantly (status 2) while tmux session creation still reported success. The shell is now resolved in Node (`$SHELL`, then the passwd entry, then `/bin/bash`, `/bin/zsh`, `/bin/sh`), requiring an absolute path to an executable and skipping `nologin`-style stubs, then shell-quoted. Only local shell sessions were affected: agent CLI modes emit a real command, and Docker/remote-SSH cases already used a literal `exec bash -l`.
+
+  **A session name typed into the tab options could be silently dropped.** Two independent paths. In the Session Options modal, the Session Name input saves on blur while every autosave handler bails on a null `editingSessionId`, and `closeSessionOptions()` cleared that id before hiding the modal (hiding is what blurs the input), so the save always ran too late; Escape and backdrop-click lost the name with no PUT at all, and only the X button worked because mousedown blurs first. The focused modal field is now blurred before the id is cleared, which also covers the auto-compact prompt. Separately, the right-click inline rename could be destroyed mid-keystroke: the `_inlineRenameActive` guard was missing from `_renderSessionTabsImmediate()`, so a render queued just before the rename opened still rewrote the tab name's innerHTML, committing a truncated name or closing the rename outright. The debounced executor is now guarded too.
+
+## 1.9.8
+
+### Patch Changes
+
+- **Fixed: sessions failed to start on macOS with `Error: posix_spawnp failed.`** (issues #6 and #204)
+
+  `node-pty@1.1.0` publishes its macOS prebuilt helper as `prebuilds/darwin-<arch>/spawn-helper` with mode 0644, i.e. no execute bit. macOS launches every PTY through that helper, so a stock install failed on every session start. The bug is macOS-only: `spawn-helper` is a mac-only gyp target and node-pty ships no Linux prebuild, so Linux always compiles a correctly-permissioned helper from source.
+
+  The previous fix chmodded only `build/Release/spawn-helper`, which on macOS does not exist (the prebuild is used, so node-gyp never runs), and it derived that path from `require.resolve('node-pty')`, landing on `<pkg>/lib/build/Release/...`. It was a no-op on every platform.
+  - New `scripts/fix-node-pty.mjs` (also `npm run fix:node-pty`) chmods every `spawn-helper` it finds, in `build/Release`, `build/Debug` and each `prebuilds/*/`, then verifies the result by actually opening a PTY. A `require()` alone passes on a broken install, because the helper is only touched at spawn time.
+  - `postinstall` no longer force-rebuilds node-pty from source on Node 22+. That step needed Xcode command line tools, cost 30-120s on every install, and deleted the `prebuilds/` tree before compiling, so a Mac without a compiler was left with no working binary at all. A rebuild now happens only when the chmod plus spawn probe still fails, and the prebuilds tree is backed up and restored around it.
+  - New `spawnPtyWithHelperRepair()` (`src/utils/node-pty-repair.ts`) wraps every `pty.spawn()` in `session.ts`, so an install that is already broken repairs itself on the first failed spawn and retries in-process instead of showing a dead session. Unrelated spawn errors are rethrown untouched; a second failure carries the `npm run fix:node-pty` hint.
+  - `scripts/fix-node-pty.mjs` is now in the published `files` list, so global npm installs get the repair too.
+  - Direct-PTY Claude spawns use the resolved absolute binary path (new `getClaudeBinaryPath()`) instead of the bare name `claude`, so a CLI installed outside the server's PATH still launches.
+
+  Verified end to end on macOS 26.4 arm64: a stock `npm i` reproduces `posix_spawnp failed.`, and after the fix the same install spawns a PTY successfully with the prebuilds preserved.
+
+  **Added: phone home screen (session overview)**
+
+  Under 430px the "C" logo now opens a session overview (current sessions, past sessions, spaces) instead of the welcome overlay: on a small screen "which session needs me" beats "how do I start one". Rows resume a session in place, and "New session here" goes through the normal quick-start path so remote and Docker cases keep their routing. Per-device setting `mobileOverviewEnabled` (phones only, default ON) in App Settings. Tablet and desktop are unchanged.
+
+  **Added: guided Tailscale setup in `install.sh`**
+
+  The network-access prompt is now 3-way: Tailscale, LAN, or local-only. The Tailscale path binds loopback and walks through installing Tailscale, logging in, the operator grant, the tailnet HTTPS-certificates toggle, and `tailscale serve --bg <port>`, then verifies the result end to end with curl. That gives HTTPS on a real certificate with no app password and no `0.0.0.0` bind, which is also what PWA install and web push need. `install.sh tailscale` retrofits it onto an existing install, and `CODEMAN_TAILSCALE=1` presets the choice. Serve state is detected from `tailscale serve status --json`; the installer never runs `tailscale serve reset` and never touches serve mappings other than 443 to Codeman's port. README and `docs/security-architecture.md` updated to match.
+
+  **Docs**: replaced a real tailnet hostname with placeholders in `docs/web-tabs-fixes-plan.md`.
+
+  **xterm-zerolag-input**: npm description and keywords only, no code change.
+
+## 1.9.7
+
+### Patch Changes
+
+- Antigravity run mode, plus opt-in entrance animations.
+
+  **Antigravity CLI backend (#207).** Antigravity (`agy`) joins Claude Code, shell, OpenCode, Codex and Gemini as a sixth session backend, following the same pluggable-resolver pattern: `utils/antigravity-cli-resolver.ts` resolves the CLI and `GET /api/antigravity/status` reports availability and path. `ANTIGRAVITY_*` is added to the `ALLOWED_ENV_PREFIXES` allowlist so env overrides stay CLI-scoped rather than blanket-forwarded. Like the other external CLIs it requires tmux with no direct PTY fallback, because secrets are injected through socket-scoped `tmux setenv` and never on the spawn command line. The UI gains a Run-dropdown entry, an agent-type option, an `ag` tab badge and toolbar colours; `runAntigravity()` routes remote and docker cases through `POST /api/quick-start` and skips the local status probe for them.
+
+  **Entrance animations (opt-in, OFF by default).** Optional animations for the four things that appear when work starts: session tabs, the terminal pane a session's CLI runs in, floating agent windows, and the connection lines tying a window back to its parent tab. Defaults are the `legacy` theme, so an untouched install behaves exactly as before and every hook short-circuits on its first line. Choose a look in App Settings > Appearance > Entrance Animations (per-device, stored in localStorage rather than the settings payload); `?animlab=1` opens a per-surface picker with a live preview that fakes tabs, a pane, a window and a line so styles can be compared without spawning sessions.
+
+  Three implementation notes worth knowing if you touch this: tabs and connection lines are destroyed mid-animation on every re-render (`_fullRenderSessionTabs()` replaces the strip's innerHTML, `_updateConnectionLinesImmediate()` clears the SVG), so both are tracked by id and re-applied to the fresh element with a negative `animation-delay` that resumes rather than restarts them; terminal-pane styles animate transform, opacity and clip-path only, because xterm's FitAddon derives rows and columns from the untransformed layout box and animating width or height there would resize the PTY; and window styles that transform also move the rect their connection line aims at, which is why the `beam` style animates opacity and filter only.
+
+  Also fixes an agent window spawning hidden (its agent belongs to a background tab): being `display:none` it never ran its animation, so `animationend` never fired and the entrance class plus its inline custom property stuck to the window permanently. Hidden windows now skip the entrance entirely.
+
+## 1.9.6
+
+### Patch Changes
+
+- Two fixes from community PRs (thanks @Lint111):
+  - fix(transcripts): complete tools from user-entry results (#177). Claude transcripts record tool requests in assistant entries but commonly carry their results in user-role entries; the transcript watcher only completed tools from the older assistant-entry path, so Codeman could keep showing a tool as running after it had finished. The watcher now recognizes `tool_result` blocks in user entries, ends the active tool state, and emits `transcript:tool_end` with the correct tool name and error status. Watcher tests also moved from fixed sleeps to condition-based `vi.waitFor` assertions.
+  - fix(notifications): quiet lifecycle hook noise (#178). Notification preferences move to schema version 5: the drawer-only "Response complete" (stop) default is now off, and the migration disables only the legacy drawer-only shape, preserving any explicit browser, audio, or push delivery the user opted into. Teammate-idle and task-completed hooks now map to the existing opt-in subagent categories instead of the broadly enabled idle/stop alerts, so normal agent activity no longer floods the drawer. Local and server-hydrated preferences are normalized through the same migration path (server hydration used to revive the retired default on fresh browsers), and the notification storage key now uses the stable handheld identity so an unfolded foldable keeps its mobile defaults and storage key (tablets and desktops unaffected).
+
 ## 1.9.5
 
 ### Patch Changes

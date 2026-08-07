@@ -52,7 +52,12 @@ function loadCodemanAppClass(elements: Record<string, Record<string, unknown>>) 
 }
 
 describe('Last Response viewer', () => {
-  it('does not replace an empty transcript response with the full terminal history', async () => {
+  // Merge note (origin/master eb8d11f): an empty transcript now FALLS BACK to the
+  // cleaned terminal buffer for claude/shell sessions, so tmux repaints can no
+  // longer leave the viewer blank when output plainly exists. This test used to
+  // assert the opposite (no fallback, one fetch); it now pins the fallback's
+  // empty-buffer path — still "No response yet", but only after both sources miss.
+  it('falls back to the terminal buffer when the transcript is empty', async () => {
     const elements = {
       responseViewer: { classList: fakeClassList() },
       responseViewerBackdrop: { classList: fakeClassList() },
@@ -76,8 +81,10 @@ describe('Last Response viewer', () => {
 
     await app.toggleResponseViewer();
 
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(fetchMock).toHaveBeenCalledWith('/api/sessions/claude-session/last-response');
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock).toHaveBeenNthCalledWith(1, '/api/sessions/claude-session/last-response');
+    expect(fetchMock).toHaveBeenNthCalledWith(2, '/api/sessions/claude-session/terminal');
+    // Both sources empty (the mock returns no terminalBuffer) — placeholder stands.
     expect(elements.responseViewerBody.textContent).toContain('No response yet');
     expect(elements.responseViewerTitle.textContent).toBe('Last Response');
   });

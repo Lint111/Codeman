@@ -27,6 +27,15 @@ const CLAUDE_SEARCH_DIRS = [
 let _claudeDir: string | null = null;
 
 /**
+ * Returns true if the Claude CLI binary can be located (via `which` or one of
+ * the common install directories). Mirrors `isGeminiAvailable`/`isAntigravityAvailable`/`isOpenCodeAvailable`/
+ * `isCodexAvailable` in the sibling resolvers.
+ */
+export function isClaudeAvailable(): boolean {
+  return findClaudeDir() !== null;
+}
+
+/**
  * Finds the directory containing the `claude` binary.
  * Checks `which claude` first, then falls back to common install locations.
  * Result is cached for subsequent calls.
@@ -57,6 +66,21 @@ export function findClaudeDir(): string | null {
 
   _claudeDir = ''; // mark as searched, not found
   return null;
+}
+
+/**
+ * Returns an absolute path to the `claude` binary, falling back to the bare
+ * name `'claude'` when it cannot be located (so PATH resolution still gets a
+ * chance).
+ *
+ * Preferred over passing `'claude'` to `pty.spawn()`: a PTY child resolves the
+ * command against the environment it is handed, and an install that lives in
+ * `~/.local/bin` or `~/.claude/local` is frequently absent from the PATH the
+ * server process inherited (issue #6).
+ */
+export function getClaudeBinaryPath(): string {
+  const dir = findClaudeDir();
+  return dir ? join(dir, 'claude') : 'claude';
 }
 
 /** Cached augmented PATH string */

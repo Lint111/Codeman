@@ -71,6 +71,16 @@ describe('run mode UI', () => {
     expect(app.runMode).toBe('gemini');
     expect(runBtnLabel.textContent).toBe('Run GM');
   });
+
+  it('accepts Antigravity mode from server sync and updates the run button label', async () => {
+    const { app, storage, runBtnLabel } = loadRunModeHarness();
+
+    storage.set('codeman_runMode', 'claude');
+    await app.loadAppSettingsFromServer(Promise.resolve({ runMode: 'antigravity' }));
+
+    expect(app.runMode).toBe('antigravity');
+    expect(runBtnLabel.textContent).toBe('Run AG');
+  });
 });
 
 describe('Run launch synchronization', () => {
@@ -102,6 +112,71 @@ describe('Run launch synchronization', () => {
     expect(app.terminal.writeln).not.toHaveBeenCalled();
     expect(app.showToast).toHaveBeenNthCalledWith(1, 'Starting Codex session', 'info');
     expect(app.showToast).toHaveBeenNthCalledWith(2, 'Launch failed', 'error');
+  });
+
+  it('still renders launch progress in the terminal on the session-less home screen', () => {
+    const CodemanApp = function CodemanApp(this: any) {};
+    const context = vm.createContext({
+      CodemanApp,
+      localStorage: { getItem: () => null, setItem: () => {} },
+      document: { getElementById: () => null },
+      console,
+    });
+    const sessionUi = readFileSync(resolve(import.meta.dirname, '../src/web/public/session-ui.js'), 'utf8');
+    vm.runInContext(sessionUi, context, { filename: 'session-ui.js' });
+
+    const app = new (CodemanApp as any)();
+    app.activeSessionId = null; // home screen: nothing else owns the terminal
+    app.terminal = { clear: vi.fn(), writeln: vi.fn() };
+    app.showToast = vi.fn();
+
+    const ownsTerminal = app._beginSessionLaunchStatus('Starting Codex session', '1;32');
+    app._appendSessionLaunchStatus(ownsTerminal, 'Creating session');
+    app._reportSessionLaunchError(ownsTerminal, 'Launch failed');
+
+    expect(ownsTerminal).toBe(true);
+    expect(app.terminal.clear).toHaveBeenCalledTimes(1);
+    expect(app.terminal.writeln.mock.calls.map((c: string[]) => c[0]).join('\n')).toContain('Starting Codex session');
+    expect(app.terminal.writeln.mock.calls.map((c: string[]) => c[0]).join('\n')).toContain('Creating session');
+    expect(app.terminal.writeln.mock.calls.map((c: string[]) => c[0]).join('\n')).toContain('Error: Launch failed');
+    expect(app.showToast).not.toHaveBeenCalled();
+  });
+
+  /**
+   * Static guard over session-ui.js itself. The helpers above can be perfectly
+   * correct while a run*() entry point still writes to the shared xterm
+   * directly, which is the actual bug: a launch started while another session
+   * is active wipes that session's terminal, and _cleanupPreviousSession()
+   * then serializes the wiped view into its restore snapshot. Asserting on the
+   * helpers alone cannot see that, so pin the call sites here. This also
+   * covers run modes added later, which is how runAntigravity was caught.
+   */
+  it('routes every run mode through the ownership helpers, never the terminal directly', () => {
+    const src = readFileSync(resolve(import.meta.dirname, '../src/web/public/session-ui.js'), 'utf8');
+
+    // Methods live in one Object.assign(prototype, {...}) block at a fixed
+    // 2-space indent, so `\n  },` reliably closes the one we are inside.
+    const bodies = new Map<string, string>();
+    const header = /^ {2}async (run[A-Za-z]*)\(\) \{$/gm;
+    for (let m = header.exec(src); m; m = header.exec(src)) {
+      const start = m.index + m[0].length;
+      const end = src.indexOf('\n  },', start);
+      expect(end, `could not find the end of ${m[1]}()`).toBeGreaterThan(start);
+      bodies.set(m[1], src.slice(start, end));
+    }
+
+    // Fail loudly if the scan matched nothing: a silently empty scan would make
+    // every assertion below vacuously true.
+    expect([...bodies.keys()]).toEqual(
+      expect.arrayContaining(['runClaude', 'runShell', 'runOpenCode', 'runCodex', 'runGemini', 'runAntigravity'])
+    );
+
+    for (const [name, body] of bodies) {
+      expect(body, `${name}() must not clear a terminal it may not own`).not.toContain('this.terminal.clear(');
+      expect(body, `${name}() must not write launch status straight to the terminal`).not.toContain(
+        'this.terminal.writeln('
+      );
+    }
   });
 
   it('coalesces overlapping Run activations and disables the button while the request is active', async () => {
@@ -216,6 +291,172 @@ describe('Codex quick start settings', () => {
     expect(codexTab?.[1]).toContain('appSettingsCodexDangerouslyBypassApprovals');
     expect(codexTab?.[1]).toContain('appSettingsCodexAnimations');
     expect(codexTab?.[1]).not.toContain('appSettingsCodexRenderMode');
+  });
+
+  describe('Codex CLI tab visibility', () => {
+    // Both settings on the tab are handed to `codex` at launch, so on an instance
+    // where the binary does not resolve the tab is a promise nothing can keep.
+    // renderIndexHtml injects window.__codemanCliAvailable; this pins the client
+    // half. Coupled test: it drives the REAL settings-ui.js against a stub button,
+    // so deleting the call in openAppSettings() is what it is meant to catch.
+    function loadSettingsUi(codexAvailable: boolean | undefined) {
+      const codexTabBtn = { dataset: { tab: 'settings-codex' }, style: { display: 'PRISTINE' } };
+      const CodemanApp = function CodemanApp(this: any) {};
+      const context: any = vm.createContext({
+        CodemanApp,
+        MobileDetection: { getDeviceType: () => 'desktop', isTouchDevice: () => false, isHandheldDevice: () => false },
+        localStorage: { getItem: () => null, setItem: () => {} },
+        document: {
+          getElementById: () => null,
+          querySelector: (sel: string) => (sel.includes('[data-tab="settings-codex"]') ? codexTabBtn : null),
+        },
+        console,
+      });
+      context.window = context;
+      if (codexAvailable !== undefined) context.__codemanCliAvailable = { codex: codexAvailable };
+      const settingsUi = readFileSync(resolve(import.meta.dirname, '../src/web/public/settings-ui.js'), 'utf8');
+      vm.runInContext(settingsUi, context, { filename: 'settings-ui.js' });
+      return { app: new (CodemanApp as any)(), codexTabBtn };
+    }
+
+    it('hides the Codex tab when the codex binary is not available', () => {
+      const { app, codexTabBtn } = loadSettingsUi(false);
+      app._applyCodexSettingsVisibility();
+      expect(codexTabBtn.style.display).toBe('none');
+    });
+
+    it('hides the Codex tab when the availability flag was never injected', () => {
+      const { app, codexTabBtn } = loadSettingsUi(undefined);
+      app._applyCodexSettingsVisibility();
+      expect(codexTabBtn.style.display).toBe('none');
+    });
+
+    it('shows the Codex tab when codex is available', () => {
+      const { app, codexTabBtn } = loadSettingsUi(true);
+      app._applyCodexSettingsVisibility();
+      expect(codexTabBtn.style.display).toBe('');
+    });
+
+    it('applies the gating from openAppSettings, not just in isolation', () => {
+      const src = readFileSync(resolve(import.meta.dirname, '../src/web/public/settings-ui.js'), 'utf8');
+      const open = src.slice(src.indexOf('\n  openAppSettings() {'));
+      const body = open.slice(0, open.indexOf('\n  },'));
+      expect(body).toContain('_applyCodexSettingsVisibility()');
+    });
+  });
+
+  describe('CLI availability gating (#200/#201)', () => {
+    // Drives the REAL settings-ui.js + session-ui.js against stub elements, so an
+    // added run mode that nobody wires up here is what these are meant to catch.
+    function loadUi(flags: Record<string, boolean> | undefined) {
+      const CodemanApp = function CodemanApp(this: any) {};
+      const welcomeBtns: Record<string, { style: { display: string } }> = {};
+      for (const id of [
+        'welcomeClaudeBtn',
+        'welcomeOpencodeBtn',
+        'welcomeAntigravityBtn',
+        'welcomeGeminiBtn',
+        'welcomeTunnelBtn',
+      ]) {
+        welcomeBtns[id] = { style: { display: 'PRISTINE' } };
+      }
+      const modeBtns: Record<string, { style: { display: string } }> = {};
+      for (const mode of ['claude', 'opencode', 'codex', 'gemini', 'antigravity', 'shell']) {
+        modeBtns[mode] = { style: { display: 'PRISTINE' } };
+      }
+      const menu = {
+        querySelector: (sel: string) => {
+          const m = sel.match(/data-mode="([^"]+)"/);
+          return m ? (modeBtns[m[1]] ?? null) : null;
+        },
+      };
+      const context: any = vm.createContext({
+        CodemanApp,
+        MobileDetection: { getDeviceType: () => 'desktop', isTouchDevice: () => false, isHandheldDevice: () => false },
+        localStorage: { getItem: () => null, setItem: () => {} },
+        document: { getElementById: (id: string) => welcomeBtns[id] ?? null, querySelector: () => null },
+        console,
+      });
+      context.window = context;
+      if (flags !== undefined) context.__codemanCliAvailable = flags;
+      for (const file of ['settings-ui.js', 'session-ui.js']) {
+        const src = readFileSync(resolve(import.meta.dirname, `../src/web/public/${file}`), 'utf8');
+        vm.runInContext(src, context, { filename: file });
+      }
+      return { app: new (CodemanApp as any)(), welcomeBtns, modeBtns, menu };
+    }
+
+    const ALL_OFF = {
+      claude: false,
+      opencode: false,
+      codex: false,
+      gemini: false,
+      antigravity: false,
+      cloudflared: false,
+    };
+
+    it('hides each welcome button whose tool is missing, including the tunnel', () => {
+      const { app, welcomeBtns } = loadUi({ ...ALL_OFF, claude: true });
+      app.applyWelcomeCliVisibility();
+      expect(welcomeBtns.welcomeClaudeBtn.style.display).toBe('flex');
+      expect(welcomeBtns.welcomeOpencodeBtn.style.display).toBe('none');
+      expect(welcomeBtns.welcomeAntigravityBtn.style.display).toBe('none');
+      expect(welcomeBtns.welcomeGeminiBtn.style.display).toBe('none');
+      // #200 originally DELETED the tunnel button and its QR outright; it is gated
+      // on cloudflared instead, so a box that has cloudflared keeps the feature.
+      expect(welcomeBtns.welcomeTunnelBtn.style.display).toBe('none');
+
+      const withTunnel = loadUi({ ...ALL_OFF, cloudflared: true });
+      withTunnel.app.applyWelcomeCliVisibility();
+      expect(withTunnel.welcomeBtns.welcomeTunnelBtn.style.display).toBe('flex');
+
+      // Antigravity is a first-class welcome action, gated on `agy` like the rest.
+      const withAgy = loadUi({ ...ALL_OFF, antigravity: true });
+      withAgy.app.applyWelcomeCliVisibility();
+      expect(withAgy.welcomeBtns.welcomeAntigravityBtn.style.display).toBe('flex');
+      expect(withAgy.welcomeBtns.welcomeClaudeBtn.style.display).toBe('none');
+    });
+
+    it('gates every run mode in the dropdown, antigravity included, and never shell', () => {
+      const { app, modeBtns, menu } = loadUi({ ...ALL_OFF, claude: true, antigravity: true });
+      app._refreshRunModeAvailability(menu);
+      expect(modeBtns.claude.style.display).toBe('flex');
+      expect(modeBtns.antigravity.style.display).toBe('flex');
+      expect(modeBtns.opencode.style.display).toBe('none');
+      expect(modeBtns.codex.style.display).toBe('none');
+      expect(modeBtns.gemini.style.display).toBe('none');
+      // Shell needs no external CLI, and leaving it alone is what guarantees the
+      // menu is never empty on a box with nothing installed.
+      expect(modeBtns.shell.style.display).toBe('PRISTINE');
+    });
+
+    it('gates every mode the run-mode menu actually offers', () => {
+      // Catches a sixth run mode being added to index.html without being gated,
+      // which is exactly how antigravity slipped past #201.
+      const html = readFileSync(resolve(import.meta.dirname, '../src/web/public/index.html'), 'utf8');
+      const menuHtml = html.slice(html.indexOf('id="runModeMenu"'));
+      const offered = [...menuHtml.slice(0, menuHtml.indexOf('</div>')).matchAll(/data-mode="([^"]+)"/g)].map(
+        (m) => m[1]
+      );
+      expect(offered).toContain('antigravity');
+      const src = readFileSync(resolve(import.meta.dirname, '../src/web/public/session-ui.js'), 'utf8');
+      // Anchor on the DEFINITION, not the earlier call site in toggleRunModeMenu.
+      const fn = src.slice(src.indexOf('_refreshRunModeAvailability(menu) {'));
+      const gated = fn.slice(0, fn.indexOf('\n  },'));
+      for (const mode of offered.filter((m) => m !== 'shell')) {
+        expect(gated).toContain(`'${mode}'`);
+      }
+    });
+
+    it('shows everything when the flags were never injected', () => {
+      // A cached page from a build without the injection, or a solo popup. Hiding
+      // every run button on a doubt would leave a working install nothing to click.
+      const { app, welcomeBtns, modeBtns, menu } = loadUi(undefined);
+      app.applyWelcomeCliVisibility();
+      app._refreshRunModeAvailability(menu);
+      expect(welcomeBtns.welcomeClaudeBtn.style.display).toBe('flex');
+      expect(modeBtns.gemini.style.display).toBe('flex');
+    });
   });
 
   it('passes global Codex settings into quick-start config for new sessions', async () => {
@@ -651,5 +892,58 @@ describe('Gemini quick start', () => {
       geminiConfig: { approvalMode: 'yolo' },
     });
     expect(selected).toEqual(['sess-gm']);
+  });
+});
+
+describe('Antigravity quick start', () => {
+  // Same envelope-unwrap regression guard as the Gemini block above, for runAntigravity().
+  it('drives runAntigravity() through the {success,data} envelope and selects the new session', async () => {
+    const elements: Record<string, any> = {
+      quickStartCase: { value: 'ag-case' },
+    };
+    const requests: Array<{ url: string; body?: any }> = [];
+    const CodemanApp = function CodemanApp(this: any) {};
+
+    const context = vm.createContext({
+      CodemanApp,
+      localStorage: { getItem: () => null, setItem: () => {} },
+      document: { getElementById: (id: string) => elements[id] ?? null },
+      fetch: async (url: string, init?: { body?: string }) => {
+        requests.push({ url, body: init?.body ? JSON.parse(init.body) : undefined });
+        if (url === '/api/antigravity/status')
+          return { json: async () => ({ success: true, data: { available: true } }) };
+        if (url === '/api/quick-start')
+          return { json: async () => ({ success: true, data: { sessionId: 'sess-ag' } }) };
+        if (url === '/api/sessions/sess-ag')
+          return { json: async () => ({ success: true, data: { id: 'sess-ag', name: 'w1-ag-case' } }) };
+        throw new Error(`unexpected fetch: ${url}`);
+      },
+      console,
+    });
+
+    const sessionUi = readFileSync(resolve(import.meta.dirname, '../src/web/public/session-ui.js'), 'utf8');
+    vm.runInContext(sessionUi, context, { filename: 'session-ui.js' });
+
+    const app = new (CodemanApp as any)();
+    app.terminal = { clear: () => {}, writeln: () => {}, focus: () => {} };
+    app.loadAppSettingsFromStorage = () => ({});
+    app.getCaseSettings = () => ({});
+    app.buildEnvOverrides = () => ({});
+    app.sessions = new Map();
+    app._onSessionCreated = (session: any) => app.sessions.set(session.id, session);
+    app._renderSessionTabsImmediate = vi.fn();
+    const selected: string[] = [];
+    app.selectSession = async (id: string) => {
+      selected.push(id);
+    };
+
+    await app.runAntigravity();
+
+    expect(requests.find((req) => req.url === '/api/quick-start')?.body).toMatchObject({
+      caseName: 'ag-case',
+      mode: 'antigravity',
+      antigravityConfig: { dangerouslySkipPermissions: true },
+    });
+    expect(selected).toEqual(['sess-ag']);
   });
 });

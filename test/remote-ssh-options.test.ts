@@ -20,7 +20,12 @@
 
 import { homedir } from 'node:os';
 import { describe, it, expect } from 'vitest';
-import { buildSshConnectionArgs, buildRemoteTmuxCheckCommand, remoteSshTarget } from '../src/remote-hosts.js';
+import {
+  buildSshConnectionArgs,
+  buildRemoteTmuxCheckCommand,
+  buildRemoteCliVersionProbeCommand,
+  remoteSshTarget,
+} from '../src/remote-hosts.js';
 import { buildRemoteLaunchCommand } from '../src/tmux-manager.js';
 import type { SessionRemote } from '../src/types.js';
 
@@ -150,7 +155,7 @@ describe('COD-107 buildRemoteLaunchCommand — threads connection args', () => {
     const sh = (s: string) => "'" + s.replace(/'/g, "'\\''") + "'";
     const remoteName = `codeman-ssh-${SESSION_ID.slice(0, 8)}`;
     const path = sh('/home/ubuntu/work');
-    const paneCommand = `cd ${path} && exec bash -l`;
+    const paneCommand = `cd ${path} && exec "\${SHELL:-/bin/sh}" -i -l`;
     const tmuxInvocation = [
       `tmux -L codeman-remote new-session -A -s ${remoteName} -c ${path} ${sh(paneCommand)}`,
       `set -t ${remoteName} status off`,
@@ -159,6 +164,10 @@ describe('COD-107 buildRemoteLaunchCommand — threads connection args', () => {
       'set -s escape-time 0',
       // COD-106 — shared/collaborative sizing, per-session scoped (never -g).
       `set -t ${remoteName} window-size latest`,
+      // #210 — keep a CRASHED pane for diagnosis. `failed` (not `on`, which would
+      // also strand a pane after a clean `exit`), and LAST because tmux aborts the
+      // remaining commands of a `\;` chain on error and `failed` needs tmux >= 3.2.
+      `set -t ${remoteName} remain-on-exit failed`,
     ].join(' \\; ');
     // Connection args (with the default -o ConnectTimeout=10) sit after -t.
     const expected = `ssh -o BatchMode=yes -t -o ConnectTimeout=10 ${remoteSshTarget(baseRemote)} ${sh(tmuxInvocation)}`;
@@ -192,5 +201,31 @@ describe('COD-107 buildRemoteTmuxCheckCommand — same connection options as the
       "ssh -o BatchMode=yes -o ConnectTimeout=10 ubuntu@10.0.0.42 'command -v tmux'"
     );
     expect(buildRemoteTmuxCheckCommand({ username: 'ubuntu', host: '10.0.0.42', port: 2222 })).toContain('-p 2222');
+  });
+});
+
+describe('buildRemoteCliVersionProbeCommand: remote CLI version over the same connection (#205)', () => {
+  it('routes the version query through the interactive-login shell wrapper, like the launch', () => {
+    const cmd = buildRemoteCliVersionProbeCommand(baseRemote, 'claude');
+    // Same PATH-resolution wrapper as defaultRemoteCommandForMode: a bare
+    // `claude --version` over ssh sees only sshd's minimal PATH (exit 127).
+    expect(cmd).toBe(
+      'ssh -o BatchMode=yes -o ConnectTimeout=10 ubuntu@10.0.0.42 ' +
+        `'exec "\${SHELL:-/bin/sh}" -i -l -c '\\''claude --version'\\'''`
+    );
+  });
+
+  it('uses the shared connection args (proxy/identity/port), so it reaches what the launch reaches', () => {
+    const cmd = buildRemoteCliVersionProbeCommand(aaDesktop, 'claude');
+    expect(cmd).toContain('-o BatchMode=yes');
+    expect(cmd).toContain('-p 2222');
+    expect(cmd).toContain(`-i '${HOME}/.ssh/remote_ed25519'`);
+    expect(cmd).toContain("-o 'ProxyCommand=nc -X 5 -x 127.0.0.1:1080 %h %p'");
+    expect(cmd).toContain('aakht@192.168.55.170');
+  });
+
+  it('maps antigravity to its real binary name and shell to no probe at all', () => {
+    expect(buildRemoteCliVersionProbeCommand(baseRemote, 'antigravity')).toContain('agy --version');
+    expect(buildRemoteCliVersionProbeCommand(baseRemote, 'shell')).toBeNull();
   });
 });

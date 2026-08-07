@@ -12,6 +12,40 @@
  */
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { WebServer } from '../src/web/server.js';
+import { isClaudeAvailable } from '../src/utils/claude-cli-resolver.js';
+import { isOpenCodeAvailable } from '../src/utils/opencode-cli-resolver.js';
+import { isCodexAvailable } from '../src/utils/codex-cli-resolver.js';
+import { isGeminiAvailable } from '../src/utils/gemini-cli-resolver.js';
+import { isAntigravityAvailable } from '../src/utils/antigravity-cli-resolver.js';
+import { isCloudflaredAvailable } from '../src/utils/cloudflared-resolver.js';
+
+// renderIndexHtml probes the real PATH for every CLI, which would make the
+// assertions below depend on whatever happens to be installed on the machine
+// running the suite. Default them all to "not installed" and opt in per test.
+vi.mock('../src/utils/claude-cli-resolver.js', () => ({
+  isClaudeAvailable: vi.fn(() => false),
+  findClaudeDir: vi.fn(() => null),
+}));
+vi.mock('../src/utils/opencode-cli-resolver.js', () => ({
+  isOpenCodeAvailable: vi.fn(() => false),
+  resolveOpenCodeDir: vi.fn(() => null),
+}));
+vi.mock('../src/utils/codex-cli-resolver.js', () => ({
+  isCodexAvailable: vi.fn(() => false),
+  resolveCodexDir: vi.fn(() => null),
+}));
+vi.mock('../src/utils/gemini-cli-resolver.js', () => ({
+  isGeminiAvailable: vi.fn(() => false),
+  resolveGeminiDir: vi.fn(() => null),
+}));
+vi.mock('../src/utils/antigravity-cli-resolver.js', () => ({
+  isAntigravityAvailable: vi.fn(() => false),
+  resolveAntigravityDir: vi.fn(() => null),
+}));
+vi.mock('../src/utils/cloudflared-resolver.js', () => ({
+  isCloudflaredAvailable: vi.fn(() => false),
+  resolveCloudflaredPath: vi.fn(() => null),
+}));
 
 const TEMPLATE = [
   '<head>',
@@ -84,6 +118,55 @@ describe('WebServer.renderIndexHtml', () => {
     html = await render(server);
     expect(html).toContain('window.__codemanGestureAvailable=true');
     expect(html).toContain('gesture-codeman.js');
+  });
+
+  it('reports every tool the welcome buttons, run menu and Codex tab gate on', async () => {
+    vi.mocked(isClaudeAvailable).mockReturnValue(true);
+    vi.mocked(isOpenCodeAvailable).mockReturnValue(false);
+    vi.mocked(isCodexAvailable).mockReturnValue(true);
+    vi.mocked(isGeminiAvailable).mockReturnValue(false);
+    vi.mocked(isAntigravityAvailable).mockReturnValue(false);
+    vi.mocked(isCloudflaredAvailable).mockReturnValue(true);
+    const { server } = makeServer({});
+    const html = await render(server);
+    const flags = JSON.parse(html.match(/window\.__codemanCliAvailable=(\{.*?\});/)![1]);
+    // Every key must be PRESENT, not merely truthy where installed: the client
+    // treats a missing key as available, so a dropped key silently un-gates.
+    expect(flags).toEqual({
+      claude: true,
+      opencode: false,
+      codex: true,
+      gemini: false,
+      antigravity: false,
+      cloudflared: true,
+    });
+  });
+
+  it('still emits the object when nothing at all is installed', async () => {
+    // The all-false case is the one that matters most and the easiest to get
+    // wrong by only injecting when something resolves.
+    for (const probe of [
+      isClaudeAvailable,
+      isOpenCodeAvailable,
+      isCodexAvailable,
+      isGeminiAvailable,
+      isAntigravityAvailable,
+      isCloudflaredAvailable,
+    ]) {
+      vi.mocked(probe).mockReturnValue(false);
+    }
+    const { server } = makeServer({});
+    const html = await render(server);
+    expect(html).toContain('window.__codemanCliAvailable=');
+    const flags = JSON.parse(html.match(/window\.__codemanCliAvailable=(\{.*?\});/)![1]);
+    expect(Object.values(flags).every((v) => v === false)).toBe(true);
+  });
+
+  it('skips the probe for a solo window, which has no welcome screen or run menu', async () => {
+    vi.mocked(isCodexAvailable).mockReturnValue(true);
+    const { server } = makeServer({});
+    const html = await render(server, 'sess-123');
+    expect(html).not.toContain('__codemanCliAvailable');
   });
 
   it('does not expose gesture at all when CODEMAN_GESTURE is unset', async () => {

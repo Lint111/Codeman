@@ -2,7 +2,7 @@
 
 Run a case inside an **isolated Docker container** instead of directly on the host. Any number of Codeman sessions can share one container (it is scoped to the case, not the session), so a whole project lives in a sandbox with its own network, resource caps, and filesystem, and you can **export the container to move it to another machine**.
 
-Docker mode is a **location overlay on cases**, the direct analog of [remote SSH cases](./remote-hosts.md): where a remote case runs a local tmux pane doing `ssh host` into a durable remote tmux server, a docker case runs a local tmux pane doing `docker exec -it` into a durable **in-container** tmux server. It is not a separate `SessionMode`, so `claude` / `shell` / `opencode` / `codex` / `gemini` all work inside the container.
+Docker mode is a **location overlay on cases**, the direct analog of [remote SSH cases](./remote-hosts.md): where a remote case runs a local tmux pane doing `ssh host` into a durable remote tmux server, a docker case runs a local tmux pane doing `docker exec -it` into a durable **in-container** tmux server. It is not a separate `SessionMode`, so `claude` / `shell` / `opencode` / `codex` / `gemini` / `antigravity` all work inside the container.
 
 ## One-time setup: build the base image
 
@@ -14,6 +14,21 @@ node scripts/build-agent-image.mjs          # builds codeman/agent:base
 ```
 
 The image is **secret-free**: credentials are delivered at runtime (bind mounts or `docker exec --env`), never baked in, so exports never leak them.
+
+⚠️ **Re-build with `--no-cache`, always.** The CLIs are installed in a single `RUN npm install -g` layer, so a plain rebuild re-uses it from the Docker layer cache and the CLIs stay frozen at whatever versions the image was **first** built with, however long ago that was. Editing the Dockerfile does not help unless the edit lands at or above that line: a change appended below it leaves the npm layer cached and only runs the new step. Observed 2026-08-06: a rebuild silently kept a stale `@openai/codex@0.144.6` whose aliased platform binary had not installed, so every `codex` docker case died with `Missing optional dependency @openai/codex-linux-x64` while the build itself reported success.
+
+```bash
+node scripts/build-agent-image.mjs --no-cache
+```
+
+A zero exit code only proves the layers ran, not that the toolchain works. Verify by actually executing each CLI in the image, and check the build log for `Using cache` lines:
+
+```bash
+docker run --rm codeman/agent:base bash -lc \
+  'for c in claude codex gemini opencode agy; do printf "%-9s " $c; $c --version 2>&1 | head -1; done'
+```
+
+Antigravity (`agy`) is the one CLI not installed from npm (Google ships a standalone binary), so it has its own Dockerfile step and adds roughly 190MB; a full image lands near 1.6GB.
 
 ## Quickest path: one-click "Run in Docker"
 

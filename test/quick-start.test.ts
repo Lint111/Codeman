@@ -97,7 +97,10 @@ describe('Quick Start API', () => {
       const settingsPath = join(casePath, '.claude', 'settings.local.json');
       expect(existsSync(settingsPath)).toBe(true);
       const settings = JSON.parse(readFileSync(settingsPath, 'utf8'));
-      expect(JSON.stringify(settings.hooks)).toContain('CODEMAN_BACKGROUND_REWAKE_V2');
+      // Version-agnostic on purpose: hooks-config bumps the suffix whenever the
+      // rewake script changes (V2 -> V3 came in with origin/master), and pinning
+      // the full versioned marker makes this test fail on every legitimate bump.
+      expect(JSON.stringify(settings.hooks)).toContain('CODEMAN_BACKGROUND_REWAKE_V');
     });
 
     it('should reject invalid case names with special characters', async () => {

@@ -352,6 +352,22 @@ const DEFAULT_SHORTCUTS = [
     action: 'clearTerminal',
   },
   {
+    id: 'copy-selection',
+    group: 'Terminal',
+    label: 'Copy Selection',
+    // Bindings match on `key`, not `code`: xterm decides which byte to emit from the
+    // PRODUCED character, so intercepting a physical KeyC that doesn't produce "c"
+    // would diverge from the chord that actually sends ^C.
+    bindings: [
+      { modifiers: ['ctrl'], key: 'c' },
+      { modifiers: ['ctrl', 'shift'], key: 'C' },
+    ],
+    // Dispatched by shouldCopyTerminalSelectionFromShortcut() in terminal-ui.js and
+    // deliberately absent from SHORTCUT_ACTIONS: the generic capture loop always
+    // preventDefaults on a match, which would cost the user the interrupt key.
+    action: 'copyTerminalSelection',
+  },
+  {
     id: 'increase-font',
     group: 'Terminal',
     label: 'Increase Font',
@@ -507,6 +523,14 @@ class CodemanApp {
       /* sessionStorage can be unavailable in hardened browser contexts */
     }
     this._selectGeneration = 0;   // cancel stale selectSession loads
+    // NOTE: upstream's `_fullHistoryLoaded` set (COD-47 / #205) is intentionally
+    // gone. It gated a one-shot `?full=1` scrollback fetch, which this branch's
+    // paged history loader supersedes — cold loads now pull the newest
+    // `historyPage` plus the latest frame in parallel and fetch older pages on
+    // upward scroll, so there is no per-session "already replayed" state to track.
+    // Cooldown per session for the scroll-to-top "load more history" re-pull.
+    this._fullHistoryRepullAt = new Map(); // Map<sessionId, timestamp>
+    this._fullHistoryRepullInFlight = false;
     this.terminalLoadStates = new Map(); // Map<sessionId, { generation, phase }>
     this.respawnStatus = {};
     this.respawnTimers = {}; // Track timed respawn timers
@@ -865,6 +889,10 @@ class CodemanApp {
     this.applyLocalization();
     this.applyTabWrapSettings();
     this.applyMonitorVisibility();
+    // Must run before the first session:created can arrive: markSessionTabEntering()
+    // ignores ids until this sets up its state, which is what keeps the tabs
+    // restored on page load from animating.
+    this.initEntranceAnimations?.();
     // Remove mobile-init class now that JS has applied visibility settings.
     // The inline <script> in <head> added this to prevent flash-of-content on mobile.
     document.documentElement.classList.remove('mobile-init');
@@ -1670,6 +1698,12 @@ class CodemanApp {
       this.sessionOrder.push(data.id);
       this.saveSessionOrder();
     }
+    // Idempotent per id: the POST response and the session:created event both
+    // land here, and a batch launched together cascades in creation order.
+    this.markSessionTabEntering?.(data.id);
+    // The pane is one shared element, so it is only marked here and played when
+    // this session is actually selected (see selectSession).
+    this.markTerminalEntering?.(data.id);
     this.renderSessionTabs();
     this.updateCost();
     // Start stats polling when first session appears
@@ -2074,6 +2108,37 @@ class CodemanApp {
     }
   }
 
+  /** Build one response-viewer message so the brief and full views share markup and CSS. */
+  _buildResponseViewerMessage(text, role, agentLabel) {
+    const div = document.createElement('div');
+    const isUser = role === 'user';
+    div.className = 'rv-message ' + (isUser ? 'rv-msg-user' : 'rv-msg-assistant');
+
+    const roleBadge = document.createElement('div');
+    roleBadge.className = 'rv-role ' + (isUser ? 'rv-role-user' : 'rv-role-assistant');
+    roleBadge.textContent = isUser ? 'You' : agentLabel;
+    div.appendChild(roleBadge);
+
+    const renderedText = document.createElement('div');
+    renderedText.className = 'rv-text';
+    renderedText.innerHTML = this._renderMarkdown(text);
+    div.appendChild(renderedText);
+    return div;
+  }
+
+  _getResponseViewerAgentLabel() {
+    const mode = this.sessions.get(this.activeSessionId)?.mode;
+    return mode === 'codex'
+      ? 'Codex'
+      : mode === 'gemini'
+        ? 'Gemini'
+        : mode === 'antigravity'
+          ? 'Antigravity'
+          : mode === 'opencode'
+            ? 'OpenCode'
+            : 'Claude';
+  }
+
   async toggleResponseViewer() {
     const viewer = document.getElementById('responseViewer');
     const backdrop = document.getElementById('responseViewerBackdrop');
@@ -2091,12 +2156,30 @@ class CodemanApp {
       // Source 1: Transcript JSONL (best quality — clean structured text from Claude)
       const res = await fetch(`/api/sessions/${this.activeSessionId}/last-response`);
       const data = (await res.json())?.data ?? {};
-      const lastResponse = data.text || '';
+      let lastResponse = data.text || '';
+
+      // Source 2: Terminal buffer fallback — strip ANSI, drop Claude CLI chrome.
+      // Claude + shell only: _cleanTerminalBuffer knows Claude CLI's output, and
+      // shell sessions have no transcript source at all; for TUI modes
+      // (codex/opencode/gemini/antigravity) it yields repaint garbage, so a clear
+      // placeholder beats a messy screen dump there.
+      const sessionMode = this.sessions.get(this.activeSessionId)?.mode || 'claude';
+      if (!lastResponse && (sessionMode === 'claude' || sessionMode === 'shell')) {
+        const termRes = await fetch(`/api/sessions/${this.activeSessionId}/terminal`);
+        const termData = (await termRes.json())?.data ?? {};
+        if (termData.terminalBuffer) {
+          lastResponse = this._cleanTerminalBuffer(termData.terminalBuffer);
+        }
+      }
 
       const body = document.getElementById('responseViewerBody');
       body._codemanCopyText = lastResponse;
       if (lastResponse) {
-        body.innerHTML = this._renderMarkdown(lastResponse);
+        // Keep the brief view inside the same message wrapper as the full
+        // conversation view. The wrapper supplies the card, role badge and
+        // descendant markdown styles that direct body children do not get.
+        body.innerHTML = '';
+        body.appendChild(this._buildResponseViewerMessage(lastResponse, 'assistant', this._getResponseViewerAgentLabel()));
         this._bindResponseViewerInteractions(body);
       } else {
         body.textContent =
@@ -2137,27 +2220,10 @@ class CodemanApp {
       }
 
       // Render conversation thread
-      const mode = this.sessions.get(this.activeSessionId)?.mode;
-      const agentLabel =
-        mode === 'codex' ? 'Codex' : mode === 'gemini' ? 'Gemini' : mode === 'opencode' ? 'OpenCode' : 'Claude';
+      const agentLabel = this._getResponseViewerAgentLabel();
       body.innerHTML = '';
       for (const msg of messages) {
-        const div = document.createElement('div');
-        const isUser = msg.role === 'user';
-        div.className = 'rv-message ' + (isUser ? 'rv-msg-user' : 'rv-msg-assistant');
-        div._codemanCopyText = typeof msg.text === 'string' ? msg.text : '';
-
-        const role = document.createElement('div');
-        role.className = 'rv-role ' + (isUser ? 'rv-role-user' : 'rv-role-assistant');
-        role.textContent = isUser ? 'You' : agentLabel;
-        div.appendChild(role);
-
-        const text = document.createElement('div');
-        text.className = 'rv-text';
-        text.innerHTML = this._renderMarkdown(msg.text);
-        div.appendChild(text);
-
-        body.appendChild(div);
+        body.appendChild(this._buildResponseViewerMessage(msg.text, msg.role, agentLabel));
       }
       this._bindResponseViewerInteractions(body);
 
@@ -3691,6 +3757,13 @@ class CodemanApp {
   }
 
   _renderSessionTabsImmediate() {
+    // Same guard as renderSessionTabs()/_fullRenderSessionTabs(): the incremental
+    // branch below rewrites .tab-name's innerHTML, which destroys the inline rename
+    // <input> mid-keystroke. Guarding only the scheduler is not enough: a render
+    // debounced just BEFORE the rename opened still fires ~100ms later and lands
+    // here directly. finishRename() re-renders on both commit and cancel, so a
+    // render dropped here is picked back up when the rename settles.
+    if (this._inlineRenameActive) return;
     const container = this.$('sessionTabs');
     const existingTabs = container.querySelectorAll('.session-tab[data-id]');
     const existingIds = new Set([...existingTabs].map(t => t.dataset.id));
@@ -3854,6 +3927,13 @@ class CodemanApp {
     }
 
     this.updateTabOverflowMode();
+    // After the wrap measurement: the `unroll` style starts tabs at max-width 0,
+    // so measuring mid-animation would decide the wrap on collapsed widths.
+    this._applyTabEntrances?.();
+    // Phone overview rides on this one call: every state change it cares about
+    // (create, delete, idle, working, exit, hook alerts via updateTabAlertFromHooks)
+    // already funnels through here. No-ops unless that surface is showing.
+    this._refreshMobileOverviewIfVisible?.();
   }
 
   // Auto-wrap desktop session tabs to a second row when they overflow one row,
@@ -3943,7 +4023,7 @@ class CodemanApp {
           <span class="tab-status ${status}" aria-hidden="true"></span>
           <span class="tab-info">
             <span class="tab-name-row">
-              ${mode === 'shell' ? '<span class="tab-mode shell" aria-hidden="true">sh</span>' : mode === 'opencode' ? '<span class="tab-mode opencode" aria-hidden="true">oc</span>' : mode === 'codex' ? '<span class="tab-mode codex" aria-hidden="true">cx</span>' : mode === 'gemini' ? '<span class="tab-mode gemini" aria-hidden="true">gm</span>' : ''}
+              ${mode === 'shell' ? '<span class="tab-mode shell" aria-hidden="true">sh</span>' : mode === 'opencode' ? '<span class="tab-mode opencode" aria-hidden="true">oc</span>' : mode === 'codex' ? '<span class="tab-mode codex" aria-hidden="true">cx</span>' : mode === 'gemini' ? '<span class="tab-mode gemini" aria-hidden="true">gm</span>' : mode === 'antigravity' ? '<span class="tab-mode antigravity" aria-hidden="true">ag</span>' : ''}
               <span class="tab-name" data-session-id="${id}">${(() => { const p = parseSessionPrefix(name); return p && p.suffix ? '<span class="tab-prefix">' + escapeHtml(p.prefix) + '</span><span class="tab-suffix">: ' + escapeHtml(p.suffix) + '</span>' : escapeHtml(name); })()}</span>
               <span class="tab-detached-badge" aria-hidden="true">detached</span>
             </span>
@@ -3980,6 +4060,9 @@ class CodemanApp {
     // toggle (applyTabWrapSettings calls this) which would otherwise leave a stale
     // tabs-auto-wrap class until the next content render.
     this.updateTabOverflowMode();
+    // Newly created tabs animate in; a re-render mid-cascade resumes them rather
+    // than restarting, since this rebuild just destroyed the animating elements.
+    this._applyTabEntrances?.();
   }
 
   // Set up arrow key navigation for session tabs (accessibility)
@@ -4474,6 +4557,58 @@ class CodemanApp {
     this.terminal.write('\x1b[3J\x1b[H\x1b[2J');
   }
 
+  /**
+   * "Load more history": re-pull the whole tmux scrollback when the user scrolls up
+   * while already at the top of what the browser has.
+   *
+   * xterm's buffer is only ever a WINDOW onto tmux's real history, and two things
+   * shrink it. tmux repaints the pane rectangle instead of emitting linefeeds
+   * whenever output outpaces its flush interval, which OVERWRITES already-rendered
+   * scrollback rather than pushing rows into it (measured: a 60-line burst added 1
+   * row and destroyed 34, while the same 60 lines emitted slowly added all 60). And
+   * a tab switch replays only the visible frame. Either way tmux still holds
+   * everything (history-limit 100k by default), so the fix is to go ask for it with
+   * the same `?full=1` capture a page reload uses (issue #205).
+   *
+   * On demand rather than automatic because that capture is unbounded-ish work: at
+   * the default history limit it can be megabytes, which is fine to pay when the
+   * user is explicitly reaching for history and not fine on every tab switch.
+   */
+  async _maybeRefetchFullHistory() {
+    const sessionId = this.activeSessionId;
+    if (!sessionId || this._fullHistoryRepullInFlight || this._isLoadingBuffer) return;
+    if (this.detachedSessions?.has(sessionId)) return;
+    const now = Date.now();
+    // Momentum scrolling fires this dozens of times per flick, and a burst of new
+    // output is the normal reason to want a re-pull, so cooldown rather than latch.
+    if (now - (this._fullHistoryRepullAt.get(sessionId) || 0) < 4000) return;
+    this._fullHistoryRepullAt.set(sessionId, now);
+    this._fullHistoryRepullInFlight = true;
+    try {
+      const res = await fetch(`/api/sessions/${sessionId}/terminal?full=1`);
+      const buffer = (await res.json())?.data?.terminalBuffer;
+      // Bail on a tab switch mid-fetch: writing here would paint another session's
+      // history into the terminal the user is now looking at.
+      if (!buffer || this.activeSessionId !== sessionId) return;
+      const rowsBefore = this.terminal.buffer.active.length;
+      this._resetTerminalForReplay();
+      await this.chunkedTerminalWrite(buffer, TERMINAL_CHUNK_SIZE, sessionId);
+      if (this.activeSessionId !== sessionId) return;
+      this.terminalBufferCache.set(sessionId, buffer);
+      // Hold the user's place. The replay is a superset that grew the buffer
+      // UPWARD, so what used to be row 0 (what they were looking at) is now `delta`
+      // rows down; scrolling there reveals the recovered history above it instead
+      // of teleporting them to the bottom the way a normal buffer load does.
+      const delta = this.terminal.buffer.active.length - rowsBefore;
+      if (delta > 0) this.terminal.scrollToLine(delta);
+      else this.terminal.scrollToTop();
+    } catch {
+      // Transient (offline, 5xx) — the next scroll-up past the cooldown retries.
+    } finally {
+      this._fullHistoryRepullInFlight = false;
+    }
+  }
+
   _shouldFocusTerminalForTabSwitch() {
     if (typeof MobileDetection === 'undefined' || !MobileDetection.isTouchDevice()) {
       return true;
@@ -4570,6 +4705,10 @@ class CodemanApp {
     // retain just enough delta output for an instant switch-back.
     this._updateSseSubscription(sessionId);
     this.hideWelcome();
+    // Terminal-pane entrance: plays for a freshly created session, and on every
+    // switch when that option is on. Transform/opacity/clip-path only, xterm's
+    // FitAddon reads the untransformed layout box, so this cannot reach the PTY.
+    this.playTerminalEntrance?.(sessionId);
     // Clear idle hooks on view, but keep action hooks until user interacts
     this.clearPendingHooks(sessionId, 'idle_prompt');
     // Instant active-class toggle (no 100ms debounce), then schedule full render for badges/status
@@ -4687,7 +4826,7 @@ class CodemanApp {
       // (viewport + scrollback + colors) for an instant first paint. For codex
       // this is also a correctness fix — its byte-stream replay shows only the
       // latest TUI frame (the idle welcome banner) because codex doesn't include
-      // earlier conversation in its current redraw. For claude/opencode/gemini
+      // earlier conversation in its current redraw. For claude/opencode/gemini/antigravity
       // the replay is already complete, so the snapshot is purely a faster,
       // scroll-preserving first paint before the canonical fetch reconciles.
       //
@@ -5226,7 +5365,9 @@ class CodemanApp {
           ? 'Kill Tmux & Codex'
           : session.mode === 'gemini'
             ? 'Kill Tmux & Gemini'
-            : 'Kill Tmux & Claude Code';
+            : session.mode === 'antigravity'
+              ? 'Kill Tmux & Antigravity'
+              : 'Kill Tmux & Claude Code';
     }
 
     document.getElementById('closeConfirmModal').classList.add('active');

@@ -390,8 +390,18 @@ export function registerSystemRoutes(
   });
 
   // ═══════════════════════════════════════════════════════════════
-  // CLI Integrations (OpenCode, Codex, Gemini)
+  // CLI Integrations (Claude, OpenCode, Codex, Gemini, Antigravity)
   // ═══════════════════════════════════════════════════════════════
+
+  // ========== Claude ==========
+
+  app.get('/api/claude/status', async () => {
+    const { isClaudeAvailable, findClaudeDir } = await import('../../utils/claude-cli-resolver.js');
+    return {
+      available: isClaudeAvailable(),
+      path: findClaudeDir(),
+    };
+  });
 
   // ========== OpenCode ==========
 
@@ -418,6 +428,16 @@ export function registerSystemRoutes(
     return {
       available: isGeminiAvailable(),
       path: resolveGeminiDir(),
+    };
+  });
+
+  // ========== Antigravity ==========
+
+  app.get('/api/antigravity/status', async () => {
+    const { isAntigravityAvailable, resolveAntigravityDir } = await import('../../utils/antigravity-cli-resolver.js');
+    return {
+      available: isAntigravityAvailable(),
+      path: resolveAntigravityDir(),
     };
   });
 

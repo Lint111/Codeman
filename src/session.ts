@@ -49,10 +49,12 @@ import {
   type CodexConfig,
   type EffortLevel,
   type GeminiConfig,
+  type AntigravityConfig,
   type SessionRemote,
   type SessionDocker,
 } from './types.js';
 import { probeDockerCliVersion } from './docker-hosts.js';
+import { probeRemoteCliVersion } from './remote-hosts.js';
 import type { TerminalMultiplexer, MuxSession } from './mux-interface.js';
 import { TaskTracker, type BackgroundTask } from './task-tracker.js';
 import { RalphTracker } from './ralph-tracker.js';
@@ -65,6 +67,9 @@ import {
   MAX_SESSION_TOKENS,
   execPattern,
   getClaudeCliVersion,
+  getClaudeBinaryPath,
+  spawnPtyWithHelperRepair,
+  resolveLocalShell,
 } from './utils/index.js';
 import {
   MAX_TERMINAL_BUFFER_SIZE,
@@ -154,7 +159,7 @@ const NEWLINE_SPLIT_PATTERN = /\r?\n/;
 
 /** True for external-CLI run modes (non-Claude) that use their own TUI and output format. */
 export function isExternalCliMode(mode: SessionMode): boolean {
-  return mode === 'opencode' || mode === 'codex' || mode === 'gemini';
+  return mode === 'opencode' || mode === 'codex' || mode === 'gemini' || mode === 'antigravity';
 }
 
 function getModeLabel(mode: SessionMode): string {
@@ -165,6 +170,8 @@ function getModeLabel(mode: SessionMode): string {
       return 'Codex';
     case 'gemini':
       return 'Gemini';
+    case 'antigravity':
+      return 'Antigravity';
     case 'shell':
       return 'Shell';
     case 'claude':
@@ -188,6 +195,37 @@ export function isAltScreenStripMode(mode: SessionMode): boolean {
   return mode === 'codex' || mode === 'claude' || mode === 'gemini';
 }
 
+/**
+ * Modes that need the NARROW strip: alt-screen toggles only, leaving `\x1b[3J`
+ * and the mouse-tracking DECSETs alone. Applies to every mode `isAltScreenStripMode`
+ * excludes, but ONLY when the session is tmux-backed (`useMux`).
+ *
+ * The bug (issue #205): the tmux CLIENT emits `smcup` (`\x1b[?1049h`) as its first
+ * bytes on attach, before any program has run. Unstripped, xterm.js parks in the
+ * alternate buffer for the whole session, where `baseY` is pinned at 0 (no
+ * scrollback to reach, so touch scrolling is a no-op) and xterm's own wheel handler
+ * translates the wheel into `\x1bOA`/`\x1bOB` cursor keys — which readline receives
+ * as shell history navigation. Both reported symptoms, one sequence.
+ *
+ * Why this is safe under tmux, despite the old "shell must keep the alt screen for
+ * vim/less/htop" reasoning: tmux is a full terminal emulator and NEVER forwards a
+ * pane's alt-screen toggles to its client, it repaints instead. Captured from a real
+ * attach, `\x1b[?1049h` appears exactly once (at attach) and vim/less/htop sessions
+ * inside the pane emit zero. So the only thing stripped here is tmux's own smcup.
+ *
+ * Why it is gated on `useMux`: `startShell()`/`startInteractive()` fall back to a
+ * DIRECT PTY when mux creation fails. There the inner program's `\x1b[?1049h` really
+ * does reach xterm, and stripping it would break vim/less/htop for real.
+ *
+ * Why it is narrower than the full strip: with tmux `mouse off`, a mouse-aware
+ * program in the pane (htop, vim with `set mouse=a`) still gets its DECSETs passed
+ * through to the client, so stripping those would break its mouse support. And
+ * `\x1b[3J` from a user's own `clear` is a deliberate "wipe my scrollback".
+ */
+export function isMuxAltScreenOnlyStripMode(mode: SessionMode, useMux: boolean): boolean {
+  return useMux && !isAltScreenStripMode(mode);
+}
+
 // Note: Claude CLI PATH resolution moved to session-cli-builder.ts (buildClaudeEnv)
 
 /** PTY fallback geometry when tmux can't be queried (matches pre-#80 hardcoded values). */
@@ -203,6 +241,8 @@ const IS_TEST_MODE = !!process.env.VITEST;
 const TEST_PTY_SCRIPT = 'if (process.stdin.isTTY) process.stdin.setRawMode(true); process.stdin.pipe(process.stdout);';
 /** Delay before the in-container Claude CLI version probe (lets the container start). */
 const DOCKER_CLI_VERSION_PROBE_DELAY_MS = 3000;
+/** Delay before the over-ssh Claude CLI version probe (keeps session start off the ssh round-trip). */
+const REMOTE_CLI_VERSION_PROBE_DELAY_MS = 3000;
 
 /**
  * Ask tmux for the current window geometry of `muxName` so a re-attaching PTY
@@ -420,6 +460,8 @@ export class Session extends EventEmitter {
   private _codexConfig: CodexConfig | undefined;
   // Gemini configuration (only for mode === 'gemini')
   private _geminiConfig: GeminiConfig | undefined;
+  // Antigravity configuration (only for mode === 'antigravity')
+  private _antigravityConfig: AntigravityConfig | undefined;
   private _resumeSessionId: string | undefined;
 
   // Ephemeral env overrides (e.g., CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS). Exported by tmux
@@ -506,6 +548,8 @@ export class Session extends EventEmitter {
       codexConfig?: CodexConfig;
       /** Gemini configuration (only for mode === 'gemini') */
       geminiConfig?: GeminiConfig;
+      /** Antigravity configuration (only for mode === 'antigravity') */
+      antigravityConfig?: AntigravityConfig;
       /** Resume a previous Claude conversation (used after server reboot) */
       resumeSessionId?: string;
       /** Extra env vars exported to the CLI at spawn time (no disk persistence) */
@@ -516,6 +560,8 @@ export class Session extends EventEmitter {
       tmuxHistoryLimit?: number;
       /** Restored per-session attachment history. May include server-private external paths. */
       attachmentHistory?: SessionAttachmentHistoryItem[];
+      /** Restored wall-clock ms of the pane's last Enter (see `lastSubmitAt`). */
+      lastSubmitAt?: number;
       /** Remote execution metadata for sessions launched through SSH inside local tmux. */
       remote?: SessionRemote;
       /** Docker execution metadata for sessions launched inside a container via local tmux. */
@@ -542,6 +588,12 @@ export class Session extends EventEmitter {
     this._lastActivityAt = this.createdAt;
     // Set claudeSessionId — when resuming, the Claude conversation ID is the resumed one.
     this._claudeSessionId = config.resumeSessionId || this.id;
+    // Restored from state.json on boot recovery. start() resets _claudeSessionId
+    // to the launch id even when re-attaching to a mux session whose CLI has
+    // moved on (a `/clear` before the restart), so this anchor is what lets the
+    // response viewer re-derive the live conversation without waiting for the
+    // user to type again.
+    this._lastSubmitAt = config.lastSubmitAt ?? 0;
     this._mux = config.mux || null;
     this._useMux = config.useMux ?? (this._mux !== null && this._mux.isAvailable());
     this._muxSession = config.muxSession || null;
@@ -577,6 +629,11 @@ export class Session extends EventEmitter {
     // Apply Gemini configuration
     if (config.geminiConfig) {
       this._geminiConfig = config.geminiConfig;
+    }
+
+    // Apply Antigravity configuration
+    if (config.antigravityConfig) {
+      this._antigravityConfig = config.antigravityConfig;
     }
 
     // Apply env overrides (exported at spawn, not persisted to disk).
@@ -752,6 +809,15 @@ export class Session extends EventEmitter {
   /** The tmux session name, if the session is running inside a mux */
   get muxName(): string | null {
     return this._muxSession?.muxName ?? null;
+  }
+
+  /**
+   * True when this session's PTY is a tmux client rather than the program itself.
+   * Read by the replay-side alt-screen strip, which must apply the same
+   * `useMux` gate as the live strip (isMuxAltScreenOnlyStripMode).
+   */
+  get usesMux(): boolean {
+    return this._useMux;
   }
 
   get totalCost(): number {
@@ -1155,6 +1221,7 @@ export class Session extends EventEmitter {
       openCodeConfig: this._openCodeConfig,
       codexConfig: this._codexConfig,
       geminiConfig: this._geminiConfig,
+      antigravityConfig: this._antigravityConfig,
       resumeSessionId: this._resumeSessionId,
       effort: this._effort,
       // COD-118: runtime-only — surfaced so the frontend can require explicit user
@@ -1163,6 +1230,7 @@ export class Session extends EventEmitter {
       // recovery can re-attach.
       respawnBlocked: this._respawnBlocked || undefined,
       attachmentHistory: this.attachmentHistory.length > 0 ? this.attachmentHistory : undefined,
+      lastSubmitAt: this._lastSubmitAt || undefined,
       // envOverrides intentionally NOT on the public SessionState type — they must not
       // leak into SSE / GET /api/sessions broadcasts (schema allows OPENCODE_*, which
       // can carry secrets). For disk persistence, session-manager calls
@@ -1325,15 +1393,17 @@ export class Session extends EventEmitter {
     const attachCommand = IS_TEST_MODE ? process.execPath : mux.getAttachCommand();
     const attachArgs = IS_TEST_MODE ? ['-e', TEST_PTY_SCRIPT] : mux.getAttachArgs(this._muxSession!.muxName);
     try {
-      this.ptyProcess = pty.spawn(attachCommand, attachArgs, {
-        name: 'xterm-256color',
-        cols: ptyCols,
-        rows: ptyRows,
-        cwd: resolveMuxAttachCwd(this.workingDir, this._remote, this._docker),
-        // COD-75: codex/gemini get COLORTERM=truecolor — mirrors buildEnvExports()
-        // in tmux-manager.ts so the attach client and the tmux session agree.
-        env: buildMuxAttachEnv(this.mode === 'codex' || this.mode === 'gemini'),
-      });
+      this.ptyProcess = spawnPtyWithHelperRepair(() =>
+        pty.spawn(attachCommand, attachArgs, {
+          name: 'xterm-256color',
+          cols: ptyCols,
+          rows: ptyRows,
+          cwd: resolveMuxAttachCwd(this.workingDir, this._remote, this._docker),
+          // COD-75: codex/gemini/antigravity get COLORTERM=truecolor — mirrors buildEnvExports()
+          // in tmux-manager.ts so the attach client and the tmux session agree.
+          env: buildMuxAttachEnv(this.mode === 'codex' || this.mode === 'gemini' || this.mode === 'antigravity'),
+        })
+      );
     } catch (spawnErr) {
       console.error(`[Session] Failed to spawn PTY for ${options.spawnErrLabel}:`, spawnErr);
       this.emit('error', `Failed to attach to mux session: ${spawnErr}`);
@@ -1397,6 +1467,7 @@ export class Session extends EventEmitter {
       openCodeConfig: this._openCodeConfig,
       codexConfig: this._codexConfig,
       geminiConfig: this._geminiConfig,
+      antigravityConfig: this._antigravityConfig,
       resumeSessionId: this._resumeSessionId,
       envOverrides: this._envOverrides,
       effort: this._effort,
@@ -1427,9 +1498,16 @@ export class Session extends EventEmitter {
     // SSE/WS stream carries them, keeping everything in the main buffer with
     // scrollback intact. These are controlled TUIs whose cursor-positioned
     // redraws overwrite only the cells they target, so non-erased rows keep
-    // their content. Gated to Codex/Claude (isAltScreenStripMode) — shell must
-    // keep the alt screen for vim/less/htop.
-    if (isAltScreenStripMode(this.mode)) {
+    // their content. Gated to Codex/Claude/Gemini (isAltScreenStripMode).
+    //
+    // Every OTHER mode (shell/opencode/antigravity) gets the NARROW strip when it
+    // is tmux-backed: alt-screen toggles only, because the sequence that breaks
+    // scrollback there is tmux's own client-side smcup at attach, not anything the
+    // program in the pane emitted (issue #205, see isMuxAltScreenOnlyStripMode).
+    // 3J and the mouse DECSETs stay, so `clear` and mouse-aware TUIs keep working.
+    const fullStrip = isAltScreenStripMode(this.mode);
+    const altOnlyStrip = !fullStrip && isMuxAltScreenOnlyStripMode(this.mode, this._useMux);
+    if (fullStrip || altOnlyStrip) {
       // Reassemble sequences split across PTY chunk boundaries first: a chunk
       // ending mid-sequence ('\x1b[?104' now, '9h' next) would slip past the
       // strip below and leave xterm stuck in the scrollback-less alt buffer
@@ -1445,13 +1523,15 @@ export class Session extends EventEmitter {
         data = data.slice(0, -splitTail[0].length);
         if (!data) return;
       }
-      data = data
-        // eslint-disable-next-line no-control-regex
-        .replace(/\x1b\[\?(?:47|1047|1049)[hl]/g, '')
-        // eslint-disable-next-line no-control-regex
-        .replace(/\x1b\[3J/g, '')
-        // eslint-disable-next-line no-control-regex
-        .replace(/\x1b\[\?(?:1000|1001|1002|1003|1005|1006|1007)[hl]/g, '');
+      // eslint-disable-next-line no-control-regex
+      data = data.replace(/\x1b\[\?(?:47|1047|1049)[hl]/g, '');
+      if (fullStrip) {
+        data = data
+          // eslint-disable-next-line no-control-regex
+          .replace(/\x1b\[3J/g, '')
+          // eslint-disable-next-line no-control-regex
+          .replace(/\x1b\[\?(?:1000|1001|1002|1003|1005|1006|1007)[hl]/g, '');
+      }
     }
 
     // Scan terminal output for attachment requests. `codeman://attach?...` is an
@@ -1511,8 +1591,8 @@ export class Session extends EventEmitter {
     // never show it — which left cliVersion undefined and silently disabled
     // wheel-forwarding to Claude's own transcript (the only route to history in
     // repaint/alt-screen mode; issue #154). Remote sessions run claude on
-    // another host, so a local probe wouldn't reflect their version — skip them
-    // and let the banner scrape handle those. Cached process-wide, best-effort.
+    // another host, so a local probe wouldn't reflect their version; they get
+    // their own over-ssh probe below. Cached process-wide, best-effort.
     if (this.mode === 'claude' && !this._remote && !this._docker && !this._cliVersion) {
       const probedVersion = getClaudeCliVersion();
       if (probedVersion) {
@@ -1551,6 +1631,32 @@ export class Session extends EventEmitter {
       }, DOCKER_CLI_VERSION_PROBE_DELAY_MS);
     }
 
+    // Remote sessions run claude on ANOTHER HOST, so neither the local nor the
+    // docker probe applies, and the banner-scrape fallback they were left with
+    // is the unreliable path #154 was filed for, so remote Claude cases silently
+    // never got wheel-forwarding (noted in the #205 analysis). Probe over ssh,
+    // deferred so session start never waits on the ssh round-trip.
+    if (this.mode === 'claude' && this._remote && !this._cliVersion) {
+      const remoteMeta = this._remote;
+      setTimeout(() => {
+        if (this._isStopped || this._cliVersion) return;
+        void probeRemoteCliVersion(remoteMeta, this.mode)
+          .then((version) => {
+            if (!version || this._isStopped || this._cliVersion) return;
+            this._cliVersion = version;
+            this.emit('cliInfoUpdated', {
+              version: this._cliVersion,
+              model: this._cliModel,
+              accountType: this._cliAccountType,
+              latestVersion: this._cliLatestVersion,
+            });
+          })
+          .catch(() => {
+            /* best-effort */
+          });
+      }, REMOTE_CLI_VERSION_PROBE_DELAY_MS);
+    }
+
     // If mux wrapping is enabled, create or attach to a mux session
     if (this._useMux && this._mux) {
       try {
@@ -1569,6 +1675,7 @@ export class Session extends EventEmitter {
             openCodeConfig: this._openCodeConfig,
             codexConfig: this._codexConfig,
             geminiConfig: this._geminiConfig,
+            antigravityConfig: this._antigravityConfig,
             resumeSessionId: this._resumeSessionId,
             envOverrides: this._envOverrides,
             effort: this._effort,
@@ -1650,18 +1757,24 @@ export class Session extends EventEmitter {
       if (this.mode === 'gemini') {
         throw new Error('Gemini sessions require tmux. Direct PTY fallback is not supported.');
       }
+      // Antigravity sessions require tmux for env override injection via setenv
+      if (this.mode === 'antigravity') {
+        throw new Error('Antigravity sessions require tmux. Direct PTY fallback is not supported.');
+      }
       try {
         // Pass --session-id to use the SAME ID as the Codeman session
         // This ensures subagents can be directly matched to the correct tab
         const args = buildInteractiveArgs(this.id, this._claudeMode, this._model, this._allowedTools, this._effort);
-        this.ptyProcess = pty.spawn('claude', args, {
-          name: 'xterm-256color',
-          cols: 120,
-          rows: 40,
-          cwd: this.workingDir,
-          // Merge envOverrides after buildClaudeEnv so user settings shadow defaults.
-          env: { ...buildClaudeEnv(this.id), ...(this._envOverrides ?? {}) },
-        });
+        this.ptyProcess = spawnPtyWithHelperRepair(() =>
+          pty.spawn(getClaudeBinaryPath(), args, {
+            name: 'xterm-256color',
+            cols: 120,
+            rows: 40,
+            cwd: this.workingDir,
+            // Merge envOverrides after buildClaudeEnv so user settings shadow defaults.
+            env: { ...buildClaudeEnv(this.id), ...(this._envOverrides ?? {}) },
+          })
+        );
       } catch (spawnErr) {
         console.error('[Session] Failed to spawn Claude PTY:', spawnErr);
         this._status = 'stopped';
@@ -1927,8 +2040,9 @@ export class Session extends EventEmitter {
 
     this._resetBuffers();
 
-    // Use user's default shell or bash
-    const shell = process.env.SHELL || '/bin/bash';
+    // Use user's default shell, falling back to a shell that actually exists.
+    // Shared with the tmux pane command so both paths launch the same binary.
+    const shell = resolveLocalShell();
     console.log(
       '[Session] Starting shell session with:',
       shell + (this._useMux ? ` (with ${this._mux!.backend})` : '')
@@ -1984,13 +2098,15 @@ export class Session extends EventEmitter {
     // Fallback to direct PTY if mux is not used
     if (!this.ptyProcess) {
       try {
-        this.ptyProcess = pty.spawn(shell, [], {
-          name: 'xterm-256color',
-          cols: 120,
-          rows: 40,
-          cwd: this.workingDir,
-          env: buildShellEnv(this.id),
-        });
+        this.ptyProcess = spawnPtyWithHelperRepair(() =>
+          pty.spawn(shell, [], {
+            name: 'xterm-256color',
+            cols: 120,
+            rows: 40,
+            cwd: this.workingDir,
+            env: buildShellEnv(this.id),
+          })
+        );
       } catch (spawnErr) {
         console.error('[Session] Failed to spawn shell PTY:', spawnErr);
         this._status = 'stopped';
@@ -2090,14 +2206,16 @@ export class Session extends EventEmitter {
         const args = buildPromptArgs(prompt, model, this._claudeMode, this._allowedTools);
 
         try {
-          this.ptyProcess = pty.spawn('claude', args, {
-            name: 'xterm-256color',
-            cols: 120,
-            rows: 40,
-            cwd: this.workingDir,
-            // Merge envOverrides after buildClaudeEnv so user settings shadow defaults.
-            env: { ...buildClaudeEnv(this.id), ...(this._envOverrides ?? {}) },
-          });
+          this.ptyProcess = spawnPtyWithHelperRepair(() =>
+            pty.spawn(getClaudeBinaryPath(), args, {
+              name: 'xterm-256color',
+              cols: 120,
+              rows: 40,
+              cwd: this.workingDir,
+              // Merge envOverrides after buildClaudeEnv so user settings shadow defaults.
+              env: { ...buildClaudeEnv(this.id), ...(this._envOverrides ?? {}) },
+            })
+          );
         } catch (spawnErr) {
           console.error('[Session] Failed to spawn Claude PTY for runPrompt:', spawnErr);
           this.emit(
@@ -2566,26 +2684,28 @@ export class Session extends EventEmitter {
    * ```
    */
   write(data: string): void {
-    this._trackCodexSubmit(data);
+    this._trackSubmit(data);
     if (this.ptyProcess) {
       this.ptyProcess.write(data);
     }
   }
 
-  // ── Codex thread tracking ─────────────────────────────────────────────
-  // When a codex pane last submitted a message (Enter). The response-viewer
-  // correlates this against ~/.codex/history.jsonl entry timestamps to find
-  // the thread the pane is ACTUALLY on — the only signal that survives
-  // /resume, /new and /fork typed inside the codex TUI itself.
-  private _codexLastSubmitAt = 0;
+  // ── Conversation tracking ─────────────────────────────────────────────
+  // When this pane last submitted a message (Enter). The response-viewer
+  // correlates this against the CLI's own history.jsonl entry timestamps to
+  // find the conversation the pane is ACTUALLY on — the only signal that
+  // survives /clear, /resume, /new and /fork typed inside the TUI itself,
+  // none of which announce themselves on the PTY's stdout.
+  private _lastSubmitAt = 0;
 
-  get codexLastSubmitAt(): number {
-    return this._codexLastSubmitAt;
+  /** Wall-clock ms of this pane's last Enter; 0 if it has never submitted. */
+  get lastSubmitAt(): number {
+    return this._lastSubmitAt;
   }
 
-  private _trackCodexSubmit(data: string): void {
-    if (this.mode === 'codex' && (data.includes('\r') || data.includes('\n'))) {
-      this._codexLastSubmitAt = Date.now();
+  private _trackSubmit(data: string): void {
+    if (data.includes('\r') || data.includes('\n')) {
+      this._lastSubmitAt = Date.now();
     }
   }
 
@@ -2642,7 +2762,7 @@ export class Session extends EventEmitter {
    * ```
    */
   async writeViaMux(data: string): Promise<boolean> {
-    this._trackCodexSubmit(data);
+    this._trackSubmit(data);
     if (this._mux && this._muxSession) {
       return this._mux.sendInput(this.id, data);
     }

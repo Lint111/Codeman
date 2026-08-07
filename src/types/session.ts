@@ -8,12 +8,13 @@
  * - SessionConfig — creation-time config (id, workingDir, createdAt)
  * - SessionOutput — captured stdout/stderr/exitCode
  * - SessionStatus — 'idle' | 'busy' | 'stopped' | 'error'
- * - SessionMode — 'claude' | 'shell' | 'opencode' | 'codex' | 'gemini' (which CLI backend)
+ * - SessionMode — 'claude' | 'shell' | 'opencode' | 'codex' | 'gemini' | 'antigravity' (which CLI backend)
  * - ClaudeMode — CLI permission mode ('dangerously-skip-permissions' | 'auto' | 'normal' | 'allowedTools')
  * - SessionColor — visual differentiation color
  * - OpenCodeConfig — OpenCode-specific settings (model, autoAllowTools, continueSession)
  * - CodexConfig — Codex (OpenAI CLI)-specific settings (model, resumeSessionId)
  * - GeminiConfig — Gemini CLI-specific settings (model, approvalMode, resumeSession)
+ * - AntigravityConfig — Antigravity CLI (agy) settings (model, dangerouslySkipPermissions, resumeConversationId)
  *
  * Cross-domain relationships:
  * - SessionState.respawnConfig embeds RespawnConfig (respawn domain)
@@ -42,9 +43,12 @@ export type SessionStatus = 'idle' | 'busy' | 'stopped' | 'error';
 export type ClaudeMode = 'dangerously-skip-permissions' | 'auto' | 'normal' | 'allowedTools';
 
 /** Session mode: which CLI backend a session runs */
-export type SessionMode = 'claude' | 'shell' | 'opencode' | 'codex' | 'gemini';
+export type SessionMode = 'claude' | 'shell' | 'opencode' | 'codex' | 'gemini' | 'antigravity';
 
-export type RemoteCommandMode = Extract<SessionMode, 'shell' | 'claude' | 'opencode' | 'codex' | 'gemini'>;
+export type RemoteCommandMode = Extract<
+  SessionMode,
+  'shell' | 'claude' | 'opencode' | 'codex' | 'gemini' | 'antigravity'
+>;
 
 /**
  * Advanced SSH connection options shared by RemoteHost and SessionRemote.
@@ -150,7 +154,10 @@ export interface RemoteSessionInfo {
 // into the same long-lived container. See `docs/docker-cases-plan.md`.
 
 /** Which CLI backends a Docker case can run (same set as remote). */
-export type DockerCommandMode = Extract<SessionMode, 'shell' | 'claude' | 'opencode' | 'codex' | 'gemini'>;
+export type DockerCommandMode = Extract<
+  SessionMode,
+  'shell' | 'claude' | 'opencode' | 'codex' | 'gemini' | 'antigravity'
+>;
 
 /** Container engine. Docker and Podman differ in the uid/userns + host-gateway alias. */
 export type DockerEngine = 'docker' | 'podman';
@@ -314,6 +321,16 @@ export interface GeminiConfig {
   resumeSession?: string;
 }
 
+/** Antigravity CLI (agy) session configuration */
+export interface AntigravityConfig {
+  /** Model identifier. Passed via --model. */
+  model?: string;
+  /** Auto-approve all tool permission requests (passes --dangerously-skip-permissions). Absent = agy's default prompting. */
+  dangerouslySkipPermissions?: boolean;
+  /** Resume a previous conversation by ID (passed via --conversation). */
+  resumeConversationId?: string;
+}
+
 /**
  * Configuration for creating a new session
  */
@@ -455,12 +472,23 @@ export interface SessionState {
   codexConfig?: CodexConfig;
   /** Gemini-specific configuration (only for mode === 'gemini') */
   geminiConfig?: GeminiConfig;
+  /** Antigravity-specific configuration (only for mode === 'antigravity') */
+  antigravityConfig?: AntigravityConfig;
   /** Claude conversation session ID to resume after reboot (set by restore script) */
   resumeSessionId?: string;
   /** Claude CLI effort level (soft default via --settings, switchable in-session via /effort) */
   effort?: EffortLevel;
   /** Sanitized per-session attachment history. */
   attachmentHistory?: SessionAttachmentHistoryItem[];
+  /**
+   * Wall-clock ms of this pane's last Enter (Session.lastSubmitAt). Persisted
+   * because it is the response-viewer's only anchor for re-deriving the pane's
+   * live conversation after a Codeman restart: `start()` resets
+   * `claudeSessionId` to the launch id even when re-attaching to a mux session
+   * whose CLI has since moved on via `/clear`, and the correlation cannot run
+   * again until the pane's own Enter is known.
+   */
+  lastSubmitAt?: number;
   /**
    * PTY-exit circuit breaker tripped — respawn blocked until an explicit restart
    * (COD-118). Runtime-only: never restored on boot (fresh server = fresh breaker).
