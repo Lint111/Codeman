@@ -27,35 +27,29 @@ Object.assign(CodemanApp.prototype, {
   renderSubagentTabBadge(sessionId, minimizedAgents) {
     if (!minimizedAgents || minimizedAgents.size === 0) return '';
 
+    // Markup lives in floating-agent-window.js — ultracode-windows.js built the
+    // same rows and badge from its own copy, which had begun to drift.
     const agentItems = [];
     for (const agentId of minimizedAgents) {
       const agent = this.subagents.get(agentId);
-      const displayName = agent?.description || agentId.substring(0, 12);
-      const truncatedName = displayName.length > 25 ? displayName.substring(0, 25) + '…' : displayName;
-      const statusClass = agent?.status || 'idle';
-      agentItems.push(`
-        <div class="subagent-dropdown-item" onclick="event.stopPropagation(); app.restoreMinimizedSubagent(${escapeHtml(JSON.stringify(agentId))}, ${escapeHtml(JSON.stringify(sessionId))})" title="Click to restore">
-          <span class="subagent-dropdown-status ${statusClass}"></span>
-          <span class="subagent-dropdown-name">${escapeHtml(truncatedName)}</span>
-          <span class="subagent-dropdown-close" onclick="event.stopPropagation(); app.permanentlyCloseMinimizedSubagent(${escapeHtml(JSON.stringify(agentId))}, ${escapeHtml(JSON.stringify(sessionId))})" title="Dismiss">&times;</span>
-        </div>
-      `);
+      const idArg = escapeHtml(JSON.stringify(agentId));
+      const sessionArg = escapeHtml(JSON.stringify(sessionId));
+      agentItems.push(
+        this.buildMinimizedWindowItem({
+          name: agent?.description || agentId.substring(0, 12),
+          statusClass: agent?.status || 'idle',
+          restoreCall: `app.restoreMinimizedSubagent(${idArg}, ${sessionArg})`,
+          dismissCall: `app.permanentlyCloseMinimizedSubagent(${idArg}, ${sessionArg})`,
+        })
+      );
     }
 
-    // Compact badge - shows on hover, click to pin open
     const count = minimizedAgents.size;
-    const label = count === 1 ? 'AGENT' : `AGENTS (${count})`;
-    return `
-      <span class="tab-subagent-badge"
-            onmouseenter="app.showSubagentDropdown(this)"
-            onmouseleave="app.scheduleHideSubagentDropdown(this)"
-            onclick="event.stopPropagation(); app.pinSubagentDropdown(this);">
-        <span class="subagent-label">${label}</span>
-        <div class="subagent-dropdown" onmouseenter="app.cancelHideSubagentDropdown()" onmouseleave="app.scheduleHideSubagentDropdown(this.parentElement)">
-          ${agentItems.join('')}
-        </div>
-      </span>
-    `;
+    return this.buildMinimizedWindowBadge({
+      badgeClass: 'tab-subagent-badge',
+      label: count === 1 ? 'AGENT' : `AGENTS (${count})`,
+      items: agentItems,
+    });
   },
 
   // Restore a minimized subagent window

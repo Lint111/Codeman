@@ -310,32 +310,16 @@ Object.assign(CodemanApp.prototype, {
     });
   },
 
-  /** Genie the window toward the center of its tab, then invoke `done` to tear it down. */
+  /**
+   * Genie the window toward the center of its tab, then invoke `done`.
+   *
+   * Kept as a thin alias: the implementation moved to `animateWindowToTab` in
+   * floating-agent-window.js so subagent windows can adopt the same gesture
+   * (they currently hide in place), and the several call sites here keep
+   * reading in ultracode terms.
+   */
   _animateUltracodeWindowToTab(element, sessionId, done) {
-    const tab = sessionId ? document.querySelector(`.session-tab[data-id="${sessionId}"]`) : null;
-    if (!tab || !element) {
-      done();
-      return;
-    }
-    const w = element.getBoundingClientRect();
-    const t = tab.getBoundingClientRect();
-    const dx = t.left + t.width / 2 - (w.left + w.width / 2);
-    const dy = t.top + t.height / 2 - (w.top + w.height / 2);
-    element.style.transformOrigin = 'center center';
-    element.style.transition = 'transform 0.26s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.26s ease';
-    element.style.pointerEvents = 'none';
-    requestAnimationFrame(() => {
-      element.style.transform = `translate(${dx}px, ${dy}px) scale(0.06)`;
-      element.style.opacity = '0';
-    });
-    let finished = false;
-    const finish = () => {
-      if (finished) return;
-      finished = true;
-      done();
-    };
-    element.addEventListener('transitionend', finish, { once: true });
-    setTimeout(finish, 320); // fallback in case transitionend doesn't fire
+    this.animateWindowToTab(element, sessionId, done);
   },
 
   /** Tab badge (with restore/dismiss dropdown) for runs minimized to this session's tab. */
@@ -346,45 +330,48 @@ Object.assign(CodemanApp.prototype, {
     const total = (runSet ? runSet.size : 0) + (agentMap ? agentMap.size : 0);
     if (total === 0) return '';
 
-    const trunc = (s) => (s.length > 25 ? s.slice(0, 25) + '…' : s);
+    // Row + badge markup is shared with subagent-windows.js via
+    // floating-agent-window.js; only the entry sources differ.
     const items = [];
     // Minimized run windows (🧬) first…
     if (runSet) {
       for (const runId of runSet) {
         const run = this.workflowRuns && this.workflowRuns.get(runId);
-        const name = run ? run.workflowName || run.summary || runId : runId;
-        const statusCls = this._workflowStatusClass(run ? String(run.status || '') : '');
+        const runArg = escapeHtml(JSON.stringify(runId));
+        const sessionArg = escapeHtml(JSON.stringify(sessionId));
         items.push(
-          `<div class="subagent-dropdown-item" onclick="event.stopPropagation(); app.restoreUltracodeRunFromTab(${escapeHtml(JSON.stringify(runId))},${escapeHtml(JSON.stringify(sessionId))})" title="Click to restore run">` +
-            `<span class="subagent-dropdown-status ${statusCls}"></span>` +
-            `<span class="ultracode-dd-icon">🧬</span>` +
-            `<span class="subagent-dropdown-name">${escapeHtml(trunc(name))}</span>` +
-            `<span class="subagent-dropdown-close" onclick="event.stopPropagation(); app.dismissMinimizedUltracodeRun(${escapeHtml(JSON.stringify(runId))},${escapeHtml(JSON.stringify(sessionId))})" title="Dismiss">&times;</span>` +
-            `</div>`
+          this.buildMinimizedWindowItem({
+            name: run ? run.workflowName || run.summary || runId : runId,
+            statusClass: this._workflowStatusClass(run ? String(run.status || '') : ''),
+            icon: '🧬',
+            title: 'Click to restore run',
+            restoreCall: `app.restoreUltracodeRunFromTab(${runArg},${sessionArg})`,
+            dismissCall: `app.dismissMinimizedUltracodeRun(${runArg},${sessionArg})`,
+          })
         );
       }
     }
     // …then minimized agent transcripts (📄).
     if (agentMap) {
       for (const [agentId, entry] of agentMap) {
-        const name = (entry && entry.label) || agentId;
+        const idArg = escapeHtml(JSON.stringify(agentId));
+        const sessionArg = escapeHtml(JSON.stringify(sessionId));
         items.push(
-          `<div class="subagent-dropdown-item" onclick="event.stopPropagation(); app.restoreUltracodeAgentFromTab(${escapeHtml(JSON.stringify(agentId))},${escapeHtml(JSON.stringify(sessionId))})" title="Click to restore transcript">` +
-            `<span class="subagent-dropdown-status"></span>` +
-            `<span class="ultracode-dd-icon">📄</span>` +
-            `<span class="subagent-dropdown-name">${escapeHtml(trunc(name))}</span>` +
-            `<span class="subagent-dropdown-close" onclick="event.stopPropagation(); app.dismissMinimizedUltracodeAgent(${escapeHtml(JSON.stringify(agentId))},${escapeHtml(JSON.stringify(sessionId))})" title="Dismiss">&times;</span>` +
-            `</div>`
+          this.buildMinimizedWindowItem({
+            name: (entry && entry.label) || agentId,
+            icon: '📄',
+            title: 'Click to restore transcript',
+            restoreCall: `app.restoreUltracodeAgentFromTab(${idArg},${sessionArg})`,
+            dismissCall: `app.dismissMinimizedUltracodeAgent(${idArg},${sessionArg})`,
+          })
         );
       }
     }
-    const label = total === 1 ? 'ULTRA' : `ULTRA (${total})`;
-    return (
-      `<span class="tab-ultracode-badge" onmouseenter="app.showSubagentDropdown(this)" onmouseleave="app.scheduleHideSubagentDropdown(this)" onclick="event.stopPropagation(); app.pinSubagentDropdown(this);">` +
-      `<span class="subagent-label">${label}</span>` +
-      `<div class="subagent-dropdown" onmouseenter="app.cancelHideSubagentDropdown()" onmouseleave="app.scheduleHideSubagentDropdown(this.parentElement)">${items.join('')}</div>` +
-      `</span>`
-    );
+    return this.buildMinimizedWindowBadge({
+      badgeClass: 'tab-ultracode-badge',
+      label: total === 1 ? 'ULTRA' : `ULTRA (${total})`,
+      items,
+    });
   },
 
   /** Restore a minimized run from its tab badge: re-open the floating window. */

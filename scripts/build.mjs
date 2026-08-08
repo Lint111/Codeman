@@ -174,6 +174,7 @@ console.log('\n[build] content-hash cache busting');
     'session-ui.js',
     'ralph-wizard.js',
     'api-client.js',
+    'floating-agent-window.js',
     'subagent-windows.js',
     'image-input.js',
     'vendor/xterm-zerolag-input.js',
