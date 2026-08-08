@@ -88,4 +88,44 @@ describe('Last Response viewer', () => {
     expect(elements.responseViewerBody.textContent).toContain('No response yet');
     expect(elements.responseViewerTitle.textContent).toBe('Last Response');
   });
+
+  // A repainting TUI places each row with CUP (`\x1b[<row>;1H`) and emits NO
+  // newline between them. Stripping the escapes without honouring what they
+  // implied collapsed a whole screen into one run:
+  //   "=== BOX ===-- lock resources --build: freetest: free..."
+  // which then rendered as a single unreadable paragraph in the viewer. This is
+  // the "formatting is lost" case, and it only bites the terminal-buffer
+  // fallback — a structured transcript never goes through here.
+  describe('_cleanTerminalBuffer positioning escapes', () => {
+    const app = Object.create((loadCodemanAppClass({}) as { prototype: object }).prototype) as {
+      _cleanTerminalBuffer: (buf: string) => string;
+    };
+
+    it('keeps cursor-positioned rows on separate lines', () => {
+      const repaint =
+        '\x1b[H\x1b[2J\x1b[1;1H=== UNDERTOW BOX 09:58:41 ===' +
+        '\x1b[2;1H-- lock resources --' +
+        '\x1b[3;1Hbuild: free' +
+        '\x1b[4;1Htest: free';
+
+      const lines = app
+        ._cleanTerminalBuffer(repaint)
+        .split('\n')
+        .filter((l) => l.trim());
+
+      expect(lines).toEqual(['=== UNDERTOW BOX 09:58:41 ===', '-- lock resources --', 'build: free', 'test: free']);
+    });
+
+    it('does not break a line on mid-row positioning', () => {
+      // Column != 1 is positioning WITHIN a row (progress bars, status fields).
+      // Treating it as a newline would shred single-line output instead.
+      const midRow = 'progress: \x1b[12G50%\x1b[20G done';
+      expect(
+        app
+          ._cleanTerminalBuffer(midRow)
+          .split('\n')
+          .filter((l) => l.trim())
+      ).toHaveLength(1);
+    });
+  });
 });

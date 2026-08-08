@@ -1844,6 +1844,21 @@ class CodemanApp {
    */
   _cleanTerminalBuffer(buf) {
     const stripped = buf
+      // ── Positioning escapes carry the line structure of a repainting TUI ──
+      // A full-screen repaint places each row with CUP (`\x1b[<row>;1H`) and
+      // emits NO newline between them, so stripping the escapes outright butts
+      // every row into one run:
+      //   "=== BOX ===-- lock resources --build: freetest: free..."
+      // Substitute a newline for the moves that imply a new line before the
+      // blanket CSI strip below removes them. Only column 1 counts: a move to
+      // any other column is positioning WITHIN a row (progress bars, status
+      // fields) and must not break the line.
+      .replace(/\x1b\[(\d+);1H/g, '\n')
+      // CUU/CUD/CNL/CPL — vertical moves that likewise stand in for newlines.
+      .replace(/\x1b\[\d*[EF]/g, '\n')
+      // Screen clears end a frame; keep them as a paragraph break so successive
+      // repaints of the same box do not merge into one wall of text.
+      .replace(/\x1b\[[12]?J/g, '\n\n')
       // CSI sequences — params (0x30-0x3F includes digits, ?, ;, <, =, >),
       // intermediates (0x20-0x2F), final byte (0x40-0x7E). Catches \x1b[>c,
       // \x1b[>q, \x1b[?25l etc. that the previous regex missed.
