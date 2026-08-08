@@ -44,5 +44,11 @@ export interface InfraPort {
    * mux-level tracking, so a pane created after this process booted is
    * reported as `discovered` but never becomes visible to the API or UI.
    */
-  resyncMuxSessions(): Promise<{ alive: string[]; dead: string[]; discovered: string[]; adopted: string[] }>;
+  resyncMuxSessions(): Promise<{
+    alive: string[];
+    dead: string[];
+    discovered: string[];
+    adopted: string[];
+    reaped: string[];
+  }>;
 }

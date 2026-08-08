@@ -144,6 +144,7 @@ export function createMockRouteContext(options?: { sessionId?: string }) {
       dead: [] as string[],
       discovered: [] as string[],
       adopted: [] as string[],
+      reaped: [] as string[],
     })),
 
     // Convenience accessors (not part of any port interface)

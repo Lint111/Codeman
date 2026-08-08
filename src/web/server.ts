@@ -2563,13 +2563,52 @@ export class WebServer extends EventEmitter {
    *
    * @returns the reconcile result plus the ids actually adopted.
    */
-  async resyncMuxSessions(): Promise<{ alive: string[]; dead: string[]; discovered: string[]; adopted: string[] }> {
+  async resyncMuxSessions(): Promise<{
+    alive: string[];
+    dead: string[];
+    discovered: string[];
+    adopted: string[];
+    reaped: string[];
+  }> {
     const result = await this.mux.reconcileSessions();
     const adopted = await this.adoptUntrackedMuxSessions();
+    const reaped = await this.reapDeadSessions(result.dead);
     if (adopted.length > 0) {
       console.log(`[Server] Resync adopted ${adopted.length} mux session(s): ${adopted.join(', ')}`);
     }
-    return { ...result, adopted };
+    if (reaped.length > 0) {
+      console.log(`[Server] Resync reaped ${reaped.length} dead session(s): ${reaped.join(', ')}`);
+    }
+    return { ...result, adopted, reaped };
+  }
+
+  /**
+   * Drop `Session` objects whose pane is gone.
+   *
+   * The mirror of the adoption gap: `reconcileSessions()` removes a dead pane
+   * from MUX tracking and emits `sessionDied`, but the server's `sessionDied`
+   * listener only logs and broadcasts `MuxDied` — it never removes the Session.
+   * The tab therefore lingers pointing at a pane that no longer exists, which
+   * is what a "dead" session panel actually is.
+   *
+   * `killMux: false` — the pane is already gone; there is nothing to kill, and
+   * on a SHARED socket issuing a kill for a name we no longer track risks
+   * acting on another instance's pane.
+   *
+   * @returns the session ids removed.
+   */
+  private async reapDeadSessions(dead: string[]): Promise<string[]> {
+    const reaped: string[] = [];
+    for (const sessionId of dead) {
+      if (!this.sessions.has(sessionId)) continue;
+      try {
+        await this.cleanupSession(sessionId, false, 'mux pane vanished (resync)');
+        reaped.push(sessionId);
+      } catch (err) {
+        console.error(`[Server] Failed to reap dead session ${sessionId}:`, err);
+      }
+    }
+    return reaped;
   }
 
   private async restoreMuxSessions(): Promise<void> {

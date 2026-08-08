@@ -6010,14 +6010,16 @@ Object.assign(CodemanApp.prototype, {
       const data = await res.json();
       const result = data.data ?? data ?? {};
       const adopted = result.adopted?.length ?? 0;
-      const dead = result.dead?.length ?? 0;
+      // `reaped` is what was actually removed; `dead` can include panes this
+      // instance never had a Session for, so reporting `dead` would overstate.
+      const reaped = result.reaped?.length ?? 0;
 
       const parts = [];
       if (adopted > 0) parts.push(`restored ${adopted} session${adopted === 1 ? '' : 's'}`);
-      if (dead > 0) parts.push(`cleaned up ${dead} dead`);
+      if (reaped > 0) parts.push(`removed ${reaped} dead`);
 
       if (parts.length > 0) {
-        this.showToast(`Resync: ${parts.join(', ')}`, adopted > 0 ? 'success' : 'warning');
+        this.showToast(`Resync: ${parts.join(', ')}`, 'success');
         // The mux panel is fetched on demand, so refresh it here. The tab strip
         // updates itself: adoption runs setupSessionListeners() and broadcasts
         // the usual session events over SSE.

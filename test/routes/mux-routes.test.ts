@@ -131,6 +131,28 @@ describe('mux-routes', () => {
       expect(reconcileOnly).not.toHaveBeenCalled();
       expect(JSON.parse(res.body).adopted).toEqual(['pane-created-later']);
     });
+
+    // Mirror of the adoption gap: reconcile drops a dead pane from mux tracking
+    // and emits `sessionDied`, but the listener only logs and broadcasts, so the
+    // Session object survived and its tab lingered pointing at a pane that no
+    // longer exists. `reaped` reports what was actually removed.
+    it('reports sessions reaped because their pane vanished', async () => {
+      harness.ctx.resyncMuxSessions = vi.fn(async () => ({
+        alive: ['still-here'],
+        dead: ['pane-vanished'],
+        discovered: [],
+        adopted: [],
+        reaped: ['pane-vanished'],
+      }));
+
+      const res = await harness.app.inject({
+        method: 'POST',
+        url: '/api/mux-sessions/reconcile',
+      });
+
+      expect(res.statusCode).toBe(200);
+      expect(JSON.parse(res.body).reaped).toEqual(['pane-vanished']);
+    });
   });
 
   // ========== POST /api/mux-sessions/stats/start ==========
