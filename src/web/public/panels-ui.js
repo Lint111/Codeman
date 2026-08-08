@@ -1494,23 +1494,47 @@ Object.assign(CodemanApp.prototype, {
       return (b.lastActivityAt || 0) - (a.lastActivityAt || 0);
     });
 
-    for (const agent of sorted) {
-      const isActive = this.activeSubagentId === agent.agentId;
-      const statusClass = agent.status === 'active' ? 'active' : agent.status === 'idle' ? 'idle' : 'completed';
-      const activity = this.subagentActivity.get(agent.agentId) || [];
-      const lastActivity = activity[activity.length - 1];
-      const lastTool = lastActivity?.type === 'tool' ? lastActivity.tool : null;
-      const hasWindow = this.subagentWindows.has(agent.agentId);
-      const canKill = agent.canKill !== false && (agent.status === 'active' || agent.status === 'idle');
-      const modelBadge = agent.modelShort
-        ? `<span class="subagent-model-badge ${escapeHtml(agent.modelShort)}">${escapeHtml(agent.modelShort)}</span>`
-        : '';
+    // Grouping is opt-in and gated on the SAME setting that gates the ultracode
+    // panel, so with it off this renders exactly today's flat list.
+    if (this._subagentRunGroupingEnabled()) {
+      list.innerHTML = this._buildGroupedSubagentListHtml(sorted);
+      return;
+    }
 
-      const teammateInfo = this.getTeammateInfo(agent);
-      const displayName = teammateInfo ? teammateInfo.name : (agent.description || agent.agentId.substring(0, 7));
-      const teammateBadge = this.getTeammateBadgeHtml(agent);
-      const agentIcon = teammateInfo ? `<span class="subagent-icon teammate-dot teammate-color-${teammateInfo.color}">●</span>` : '<span class="subagent-icon">🤖</span>';
-      html.push(`
+    for (const agent of sorted) {
+      html.push(this._subagentListItemHtml(agent));
+    }
+
+    list.innerHTML = html.join('');
+  },
+
+  /**
+   * One row of the subagent list.
+   *
+   * Extracted so the run-grouped rendering can reuse the EXACT same markup
+   * rather than growing a second copy — the two floating-window families
+   * already showed how fast a duplicated row template drifts.
+   */
+  _subagentListItemHtml(agent) {
+    const isActive = this.activeSubagentId === agent.agentId;
+    const statusClass = agent.status === 'active' ? 'active' : agent.status === 'idle' ? 'idle' : 'completed';
+    const activity = this.subagentActivity.get(agent.agentId) || [];
+    const lastActivity = activity[activity.length - 1];
+    const lastTool = lastActivity?.type === 'tool' ? lastActivity.tool : null;
+    const hasWindow = this.subagentWindows.has(agent.agentId);
+    const canKill = agent.canKill !== false && (agent.status === 'active' || agent.status === 'idle');
+    const modelBadge = agent.modelShort
+      ? `<span class="subagent-model-badge ${escapeHtml(agent.modelShort)}">${escapeHtml(agent.modelShort)}</span>`
+      : '';
+
+    const teammateInfo = this.getTeammateInfo(agent);
+    // A teammate name always wins; otherwise a workflow agent may contribute a
+    // better label than its description (see _groupedAgentLabel for why that
+    // only applies once the run has completed).
+    const displayName = teammateInfo ? teammateInfo.name : this._groupedAgentLabel(agent);
+    const teammateBadge = this.getTeammateBadgeHtml(agent);
+    const agentIcon = teammateInfo ? `<span class="subagent-icon teammate-dot teammate-color-${teammateInfo.color}">●</span>` : '<span class="subagent-icon">🤖</span>';
+    return `
         <div class="subagent-item ${statusClass} ${isActive ? 'selected' : ''}${teammateInfo ? ' is-teammate' : ''}"
              data-agent-id="${escapeHtml(agent.agentId)}"
              onclick="app.selectSubagent(${escapeHtml(JSON.stringify(agent.agentId))})"
@@ -1532,10 +1556,134 @@ Object.assign(CodemanApp.prototype, {
             ${lastTool ? `<span class="subagent-last-tool">${this.getToolIcon(lastTool)} ${lastTool}</span>` : ''}
           </div>
         </div>
-      `);
+      `;
+  },
+
+  /**
+   * Whether workflow-spawned agents collapse into run groups in this list.
+   *
+   * Gated on `showUltracodeAgents` — the same setting that gates the ultracode
+   * panel — so this is strictly additive: with the toggle off the list renders
+   * exactly as before, and nothing here depends on the workflow watcher
+   * actually running.
+   */
+  _subagentRunGroupingEnabled() {
+    const now = Date.now();
+    if (!this._runGroupingSettingAt || now - this._runGroupingSettingAt > 1000) {
+      this._runGroupingSetting = this.loadAppSettingsFromStorage?.()?.showUltracodeAgents === true;
+      this._runGroupingSettingAt = now;
+    }
+    return this._runGroupingSetting === true;
+  },
+
+  /** Runs the user has expanded in the list. Panel-local; not persisted. */
+  _expandedRunIds() {
+    if (!this._expandedWorkflowRunIds) this._expandedWorkflowRunIds = new Set();
+    return this._expandedWorkflowRunIds;
+  },
+
+  toggleSubagentRunGroup(runId) {
+    const expanded = this._expandedRunIds();
+    if (expanded.has(runId)) {
+      expanded.delete(runId);
+    } else {
+      expanded.add(runId);
+      // Pull run detail (phases, per-agent state) on FIRST expand only.
+      //
+      // Deliberately NOT `selectWorkflowRun` — that also pops a floating run
+      // window as a side effect, which would be a surprise from a list click.
+      // If the workflow watcher is off or the run has aged out, the fetch is a
+      // no-op and the group still renders from subagent data alone.
+      if (!this.workflowRunDetails?.has?.(runId)) this._fetchWorkflowRunDetail?.(runId);
+    }
+    this._renderSubagentPanelImmediate();
+  },
+
+  /**
+   * Enrich a subagent row from the workflow record for the same agent.
+   *
+   * ⚠️ Keyed on (runId, agentId), NOT agentId alone. Agent ids are near-unique
+   * but not guaranteed: measured on this machine, 1 of 2789 ids
+   * (`a274b70247988c762`) exists BOTH as a flat subagent and inside a workflow
+   * run. A flat map would silently render one row's data under the other.
+   *
+   * Returns undefined when the workflow side has nothing — which is the normal
+   * case whenever the ultracode watcher is off, so every caller must cope.
+   */
+  _workflowAgentFor(agent) {
+    if (!agent?.workflowRunId) return undefined;
+    const detail = this.workflowRunDetails?.get?.(agent.workflowRunId);
+    if (!detail?.agents) return undefined;
+    return detail.agents.find((a) => a.agentId === agent.agentId);
+  },
+
+  /**
+   * Label for a grouped agent row.
+   *
+   * ⚠️ The workflow label only wins once the run is COMPLETE. While a run is
+   * live, `workflow-run-watcher.parseLiveDir` fabricates `label: "agent <n>"`
+   * from the file's ordinal, so preferring it unconditionally would rename
+   * every in-flight agent to "agent 1", "agent 2", … and throw away the real
+   * task description the subagent side already has.
+   */
+  _groupedAgentLabel(agent) {
+    const wf = this._workflowAgentFor(agent);
+    const runStatus = String(this.workflowRuns?.get?.(agent.workflowRunId)?.status || '');
+    if (wf?.label && runStatus === 'completed') return wf.label;
+    return agent.description || wf?.label || agent.agentId.substring(0, 7);
+  },
+
+  /**
+   * Render the list with workflow agents bucketed under their run.
+   *
+   * Iterates the SUBAGENT list (the session-scoped one) and enriches from
+   * workflow state — never the reverse, which would pull cross-session and
+   * long-dead agents into a panel that is scoped to the current session.
+   */
+  _buildGroupedSubagentListHtml(sorted) {
+    const plain = [];
+    const groups = new Map(); // runId -> agents[]
+    for (const agent of sorted) {
+      if (agent.workflowRunId) {
+        if (!groups.has(agent.workflowRunId)) groups.set(agent.workflowRunId, []);
+        groups.get(agent.workflowRunId).push(agent);
+      } else {
+        plain.push(agent);
+      }
     }
 
-    list.innerHTML = html.join('');
+    const html = [];
+    const expanded = this._expandedRunIds();
+    for (const [runId, agents] of groups) {
+      const run = this.workflowRuns?.get?.(runId);
+      // Falls back to the run id when the workflow watcher is off or the run
+      // has aged out — the group still forms, because the id came from the
+      // agent's own file path.
+      const name = run?.workflowName || run?.summary || runId;
+      const statusClass = this._workflowStatusClass?.(String(run?.status || '')) || '';
+      const isOpen = expanded.has(runId);
+      const active = agents.filter((a) => a.status === 'active' || a.status === 'idle').length;
+
+      html.push(
+        `<div class="subagent-run-group${isOpen ? ' expanded' : ''}">` +
+          `<div class="subagent-run-header" role="button" tabindex="0"` +
+          ` onclick="app.toggleSubagentRunGroup(${escapeHtml(JSON.stringify(runId))})"` +
+          ` title="${escapeHtml(runId)}">` +
+          `<span class="subagent-run-caret">${isOpen ? '▾' : '▸'}</span>` +
+          `<span class="subagent-run-icon">🧬</span>` +
+          `<span class="subagent-run-name">${escapeHtml(name.length > 34 ? `${name.slice(0, 34)}…` : name)}</span>` +
+          (statusClass ? `<span class="subagent-run-status ${escapeHtml(statusClass)}"></span>` : '') +
+          `<span class="subagent-run-count">${agents.length}${active ? ` · ${active} live` : ''}</span>` +
+          `</div>` +
+          (isOpen
+            ? `<div class="subagent-run-children">${agents.map((a) => this._subagentListItemHtml(a)).join('')}</div>`
+            : '') +
+          `</div>`
+      );
+    }
+
+    for (const agent of plain) html.push(this._subagentListItemHtml(agent));
+    return html.join('');
   },
 
   selectSubagent(agentId) {

@@ -8635,6 +8635,64 @@ kbd {
   contain-intrinsic-size: auto 48px;
 }
 
+/* Run grouping (opt-in with showUltracodeAgents). Workflow-spawned agents
+   collapse under their run so a fleet reads as one entry instead of N loose
+   rows — measured on a live session: 31 agents across 9 runs. */
+.subagent-run-group {
+  margin-bottom: 0.4rem;
+}
+
+.subagent-run-header {
+  align-items: center;
+  background: var(--bg-card);
+  border-radius: 6px;
+  cursor: pointer;
+  display: flex;
+  gap: 0.4rem;
+  padding: 0.4rem 0.5rem;
+  transition: background 0.15s;
+}
+
+.subagent-run-header:hover {
+  background: var(--bg-hover, var(--bg-input));
+}
+
+.subagent-run-caret {
+  color: var(--text-dim);
+  font-size: 0.65rem;
+  width: 0.7rem;
+}
+
+.subagent-run-name {
+  flex: 1;
+  font-size: 0.7rem;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.subagent-run-status {
+  border-radius: 50%;
+  flex: none;
+  height: 6px;
+  width: 6px;
+  background: var(--text-dim);
+}
+
+.subagent-run-count {
+  color: var(--text-dim);
+  flex: none;
+  font-size: 0.6rem;
+}
+
+/* Indent members so the grouping is legible without a second scroll context. */
+.subagent-run-children {
+  border-left: 2px solid var(--border);
+  margin: 0.3rem 0 0 0.55rem;
+  padding-left: 0.4rem;
+}
+
 .subagent-item:hover {
   background: var(--bg-card);
 }
