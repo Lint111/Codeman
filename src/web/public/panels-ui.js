@@ -5994,16 +5994,36 @@ Object.assign(CodemanApp.prototype, {
     this.renderMuxSessions();
   },
 
+  /**
+   * Re-sync this instance against the tmux socket and adopt anything it is
+   * missing.
+   *
+   * A pane created after this server booted is not tracked by it — most visibly
+   * when two Codeman instances share one socket, where the newer pane shows up
+   * in one browser and not the other. The endpoint now adopts what it finds
+   * (server: `resyncMuxSessions`), so the fix here is to report `adopted` and
+   * refresh the session list rather than claiming everything was already fine.
+   */
   async reconcileMuxSessions() {
     try {
       const res = await fetch('/api/mux-sessions/reconcile', { method: 'POST' });
       const data = await res.json();
+      const result = data.data ?? data ?? {};
+      const adopted = result.adopted?.length ?? 0;
+      const dead = result.dead?.length ?? 0;
 
-      if (data.data?.dead && data.data.dead.length > 0) {
-        this.showToast(`Found ${data.data.dead.length} dead mux session(s)`, 'warning');
+      const parts = [];
+      if (adopted > 0) parts.push(`restored ${adopted} session${adopted === 1 ? '' : 's'}`);
+      if (dead > 0) parts.push(`cleaned up ${dead} dead`);
+
+      if (parts.length > 0) {
+        this.showToast(`Resync: ${parts.join(', ')}`, adopted > 0 ? 'success' : 'warning');
+        // The mux panel is fetched on demand, so refresh it here. The tab strip
+        // updates itself: adoption runs setupSessionListeners() and broadcasts
+        // the usual session events over SSE.
         await this.loadMuxSessions();
       } else {
-        this.showToast('All mux sessions are alive', 'success');
+        this.showToast('Already in sync', 'success');
       }
     } catch (err) {
       this.showToast('Failed to reconcile mux sessions', 'error');

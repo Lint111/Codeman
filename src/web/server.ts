@@ -656,6 +656,7 @@ export class WebServer extends EventEmitter {
       initOrchestratorLoop: () => this.initOrchestratorLoop(),
       // InstanceControlPort
       requestInstanceShutdown: this.requestInstanceShutdown.bind(this),
+      resyncMuxSessions: this.resyncMuxSessions.bind(this),
     };
   }
 
@@ -2545,6 +2546,32 @@ export class WebServer extends EventEmitter {
     return false;
   }
 
+  /**
+   * Reconcile against the mux AND adopt anything that reconcile turns up.
+   *
+   * ⚠️ `mux.reconcileSessions()` alone only refreshes mux-level tracking — it
+   * does NOT create the `Session` objects the API and UI read from, so calling
+   * it by itself reports `discovered: [...]` while the session list stays
+   * unchanged. That split is why `POST /api/mux-sessions/reconcile` used to
+   * look like it worked and change nothing.
+   *
+   * Adoption used to be inline in `restoreMuxSessions()` and therefore reachable
+   * only at boot, so a pane created after startup stayed invisible for the life
+   * of the process. That is the observable bug on a SHARED socket: a second
+   * instance sees panes it did not create, but only the ones that existed when
+   * it booted. Extracted here so the resync endpoint runs the exact same path.
+   *
+   * @returns the reconcile result plus the ids actually adopted.
+   */
+  async resyncMuxSessions(): Promise<{ alive: string[]; dead: string[]; discovered: string[]; adopted: string[] }> {
+    const result = await this.mux.reconcileSessions();
+    const adopted = await this.adoptUntrackedMuxSessions();
+    if (adopted.length > 0) {
+      console.log(`[Server] Resync adopted ${adopted.length} mux session(s): ${adopted.join(', ')}`);
+    }
+    return { ...result, adopted };
+  }
+
   private async restoreMuxSessions(): Promise<void> {
     try {
       // Reconcile mux sessions to find which ones are still alive (also discovers unknown ones)
@@ -2557,10 +2584,50 @@ export class WebServer extends EventEmitter {
       if (alive.length > 0 || discovered.length > 0) {
         console.log(`[Server] Found ${alive.length + discovered.length} alive mux session(s) from previous run`);
 
+        await this.adoptUntrackedMuxSessions();
+
+        // Start stats collection for mux sessions
+        this.mux.startStatsCollection(STATS_COLLECTION_INTERVAL_MS);
+      }
+
+      // Start mouse mode sync (tmux only) — toggles mouse on/off based on pane count.
+      // Mouse off = native xterm.js selection; mouse on = tmux pane clicking (split layouts).
+      // Always start, even with no sessions — new sessions may be created later.
+      if ('startMouseModeSync' in this.mux) {
+        (this.mux as { startMouseModeSync: (ms?: number) => void }).startMouseModeSync();
+      }
+
+      // COD-108 — start the remote-session auto-reconnect watcher (tmux only).
+      // Always-on (D3) with a `remoteAutoReconnect` kill-switch the watcher reads
+      // each tick. Start even with no sessions — remote sessions may arrive later.
+      if ('startRemoteReconnectWatcher' in this.mux) {
+        (this.mux as { startRemoteReconnectWatcher: (ms?: number) => void }).startRemoteReconnectWatcher();
+      }
+
+      if (dead.length > 0) {
+        console.log(`[Server] Cleaned up ${dead.length} dead mux session(s)`);
+      }
+    } catch (err) {
+      console.error('[Server] Failed to restore mux sessions:', err);
+    }
+  }
+
+  /**
+   * Create + attach a `Session` for every tracked mux pane we do not have one
+   * for yet. Idempotent: panes already in `this.sessions` are skipped, so this
+   * is safe to run repeatedly from the resync endpoint.
+   *
+   * @returns the session ids adopted by this call.
+   */
+  private async adoptUntrackedMuxSessions(): Promise<string[]> {
+    const adopted: string[] = [];
+    {
+      {
         // For each alive mux session, create a Session object if it doesn't exist
         const muxSessions = this.mux.getSessions();
         for (const muxSession of muxSessions) {
           if (!this.sessions.has(muxSession.sessionId)) {
+            adopted.push(muxSession.sessionId);
             // Restore session settings from state.json (single source of truth)
             const savedState = this.store.getSession(muxSession.sessionId);
 
@@ -2779,31 +2846,9 @@ export class WebServer extends EventEmitter {
             this.persistSessionState(session);
           }
         }
-
-        // Start stats collection for mux sessions
-        this.mux.startStatsCollection(STATS_COLLECTION_INTERVAL_MS);
       }
-
-      // Start mouse mode sync (tmux only) — toggles mouse on/off based on pane count.
-      // Mouse off = native xterm.js selection; mouse on = tmux pane clicking (split layouts).
-      // Always start, even with no sessions — new sessions may be created later.
-      if ('startMouseModeSync' in this.mux) {
-        (this.mux as { startMouseModeSync: (ms?: number) => void }).startMouseModeSync();
-      }
-
-      // COD-108 — start the remote-session auto-reconnect watcher (tmux only).
-      // Always-on (D3) with a `remoteAutoReconnect` kill-switch the watcher reads
-      // each tick. Start even with no sessions — remote sessions may arrive later.
-      if ('startRemoteReconnectWatcher' in this.mux) {
-        (this.mux as { startRemoteReconnectWatcher: (ms?: number) => void }).startRemoteReconnectWatcher();
-      }
-
-      if (dead.length > 0) {
-        console.log(`[Server] Cleaned up ${dead.length} dead mux session(s)`);
-      }
-    } catch (err) {
-      console.error('[Server] Failed to restore mux sessions:', err);
     }
+    return adopted;
   }
 
   /**

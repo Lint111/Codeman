@@ -38,4 +38,11 @@ export interface InfraPort {
   readonly pushStore: PushSubscriptionStore;
   startScheduledRun(prompt: string, workingDir: string, durationMinutes: number, owner?: string): Promise<ScheduledRun>;
   stopScheduledRun(id: string): Promise<void>;
+  /**
+   * Reconcile against the mux AND adopt whatever that turns up as real
+   * `Session` objects. `mux.reconcileSessions()` on its own only refreshes
+   * mux-level tracking, so a pane created after this process booted is
+   * reported as `discovered` but never becomes visible to the API or UI.
+   */
+  resyncMuxSessions(): Promise<{ alive: string[]; dead: string[]; discovered: string[]; adopted: string[] }>;
 }

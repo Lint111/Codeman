@@ -32,7 +32,11 @@ export function registerMuxRoutes(app: FastifyInstance, ctx: InfraPort): void {
   app.post('/api/mux-sessions/reconcile', async (req, reply) => {
     // Multi-user: process-wide reconcile → admin-only.
     if (isMultiUserMode() && !requireAdmin(req, reply)) return;
-    const result = await ctx.mux.reconcileSessions();
+    // Goes through resyncMuxSessions(), NOT mux.reconcileSessions() directly:
+    // the latter only refreshes mux-level tracking, so this endpoint used to
+    // answer `discovered: [...]` while the session list stayed unchanged and
+    // the pane never appeared in the UI.
+    const result = await ctx.resyncMuxSessions();
     return result;
   });
 

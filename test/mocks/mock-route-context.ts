@@ -137,6 +137,15 @@ export function createMockRouteContext(options?: { sessionId?: string }) {
       alreadyScheduled: false,
     })),
 
+    // Reconcile + adopt. Distinct from `mux.reconcileSessions()`, which only
+    // refreshes mux-level tracking and cannot make a discovered pane visible.
+    resyncMuxSessions: vi.fn(async () => ({
+      alive: [] as string[],
+      dead: [] as string[],
+      discovered: [] as string[],
+      adopted: [] as string[],
+    })),
+
     // Convenience accessors (not part of any port interface)
     _session: session,
     _sessionId: sessionId,

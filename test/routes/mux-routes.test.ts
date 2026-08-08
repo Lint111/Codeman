@@ -93,8 +93,8 @@ describe('mux-routes', () => {
 
   describe('POST /api/mux-sessions/reconcile', () => {
     it('returns reconciliation result', async () => {
-      const reconcileResult = { orphaned: ['old-session'], missing: [], reconciled: 1 };
-      harness.ctx.mux.reconcileSessions = vi.fn(async () => reconcileResult);
+      const reconcileResult = { alive: [], dead: [], discovered: ['old-session'], adopted: ['old-session'] };
+      harness.ctx.resyncMuxSessions = vi.fn(async () => reconcileResult);
 
       const res = await harness.app.inject({
         method: 'POST',
@@ -102,8 +102,34 @@ describe('mux-routes', () => {
       });
       expect(res.statusCode).toBe(200);
       const body = JSON.parse(res.body);
-      expect(body.orphaned).toEqual(['old-session']);
-      expect(body.reconciled).toBe(1);
+      expect(body.discovered).toEqual(['old-session']);
+      expect(body.adopted).toEqual(['old-session']);
+    });
+
+    // The endpoint used to call `mux.reconcileSessions()` directly, which only
+    // refreshes mux-level tracking: it answered `discovered: [...]` while the
+    // session list stayed unchanged, so a pane created after this server booted
+    // never became visible. Resync must go through the ADOPTING path.
+    it('adopts discovered panes instead of only reporting them', async () => {
+      const reconcileOnly = vi.fn(async () => ({ alive: [], dead: [], discovered: ['pane-created-later'] }));
+      harness.ctx.mux.reconcileSessions = reconcileOnly;
+      harness.ctx.resyncMuxSessions = vi.fn(async () => ({
+        alive: [],
+        dead: [],
+        discovered: ['pane-created-later'],
+        adopted: ['pane-created-later'],
+      }));
+
+      const res = await harness.app.inject({
+        method: 'POST',
+        url: '/api/mux-sessions/reconcile',
+      });
+
+      expect(res.statusCode).toBe(200);
+      expect(harness.ctx.resyncMuxSessions).toHaveBeenCalledTimes(1);
+      // Bare reconcile must NOT be the route's entry point — it cannot adopt.
+      expect(reconcileOnly).not.toHaveBeenCalled();
+      expect(JSON.parse(res.body).adopted).toEqual(['pane-created-later']);
     });
   });
 
