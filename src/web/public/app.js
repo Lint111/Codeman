@@ -1859,6 +1859,20 @@ class CodemanApp {
       // Screen clears end a frame; keep them as a paragraph break so successive
       // repaints of the same box do not merge into one wall of text.
       .replace(/\x1b\[[12]?J/g, '\n\n')
+      // ── CUF is a SPACE on the wire ──
+      // A repainting CLI often advances over blank cells instead of writing a
+      // space byte, encoding "word<space>word" as
+      //   word\x1b[1X\x1b[Cword          (ECH erase-1 + CUF forward-1)
+      // Stripping those escapes deletes the gap, so the text arrives fused:
+      //   "byte-identical;thevalidatorshowedthosecounterscannot move"
+      // — which is exactly how the response viewer rendered it, and it then
+      // creates accidental `~~`/`--` runs that markdown turns into <del>.
+      // Measured on one live buffer: 8210 CUF escapes against 16115 literal
+      // spaces, so more than a third of the whitespace was encoded this way.
+      // Expand CUF to that many spaces BEFORE the blanket strip. ECH erases
+      // cells that CUF then skips, so it contributes no width of its own and is
+      // dropped with the rest.
+      .replace(/\x1b\[(\d*)C/g, (_m, n) => ' '.repeat(Math.min(Number(n) || 1, 200)))
       // CSI sequences — params (0x30-0x3F includes digits, ?, ;, <, =, >),
       // intermediates (0x20-0x2F), final byte (0x40-0x7E). Catches \x1b[>c,
       // \x1b[>q, \x1b[?25l etc. that the previous regex missed.

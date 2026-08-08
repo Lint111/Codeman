@@ -116,6 +116,20 @@ describe('Last Response viewer', () => {
       expect(lines).toEqual(['=== UNDERTOW BOX 09:58:41 ===', '-- lock resources --', 'build: free', 'test: free']);
     });
 
+    it('restores spaces a repainting CLI encoded as cursor-forward moves', () => {
+      // A repainting CLI advances over blank cells instead of writing a space
+      // byte: `word\x1b[1X\x1b[Cword`. Stripping those escapes deleted the gap,
+      // so the viewer showed "byte-identical;thevalidatorshowedthosecounters".
+      // Measured on one live buffer: 8210 CUF escapes vs 16115 literal spaces.
+      const cursorSpaced = 'byte-identical;\x1b[1X\x1b[Cthe\x1b[1X\x1b[Cvalidator\x1b[1X\x1b[Cshowed';
+
+      expect(app._cleanTerminalBuffer(cursorSpaced)).toBe('byte-identical; the validator showed');
+    });
+
+    it('expands a multi-column cursor-forward move to that many spaces', () => {
+      expect(app._cleanTerminalBuffer('a\x1b[4Cb')).toBe('a    b');
+    });
+
     it('does not break a line on mid-row positioning', () => {
       // Column != 1 is positioning WITHIN a row (progress bars, status fields).
       // Treating it as a newline would shred single-line output instead.
