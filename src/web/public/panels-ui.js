@@ -2176,24 +2176,45 @@ Object.assign(CodemanApp.prototype, {
       }
     }
 
-    // Strategy 2: FALLBACK - Use the currently active session
-    // This works because agents spawn from where the user typed the command
-    if (this.activeSessionId && this.sessions.has(this.activeSessionId)) {
-      this.setAgentParentSessionId(agentId, this.activeSessionId);
-      this.updateSubagentWindowParent(agentId);
-      this.updateSubagentWindowVisibility();
-      this.updateConnectionLines();
-      return;
+    // Strategy 2: match on the agent's WORKING DIRECTORY.
+    //
+    // A restored session keeps a placeholder `claudeSessionId`
+    // (`restored-<prefix>`) until something adopts the real conversation id,
+    // and adoption only happens as a side effect of opening the response
+    // viewer. Until then Strategy 1 cannot match and every agent fell through
+    // to "blame the active tab" below — measured on a live instance: 28 of 28
+    // agents unattributed, all of them rendered under whichever session the
+    // user happened to be viewing.
+    //
+    // The agent's own workingDir is a real ownership signal that survives
+    // restore. Prefer the LONGEST matching session path so a session at a
+    // nested path wins over one rooted higher up; agents commonly run in a
+    // subdirectory of the session that spawned them.
+    if (agent.workingDir) {
+      let best = null;
+      for (const [sessionId, session] of this.sessions) {
+        const dir = session?.workingDir;
+        if (!dir) continue;
+        const contained = agent.workingDir === dir || agent.workingDir.startsWith(`${dir.replace(/\/+$/, '')}/`);
+        if (contained && (!best || dir.length > best.dir.length)) best = { sessionId, dir };
+      }
+      if (best) {
+        this.setAgentParentSessionId(agentId, best.sessionId);
+        this.updateSubagentWindowParent(agentId);
+        this.updateSubagentWindowVisibility();
+        this.updateConnectionLines();
+        return;
+      }
     }
 
-    // Strategy 3: If no active session, use the first session
-    if (this.sessions.size > 0) {
-      const firstSessionId = this.sessions.keys().next().value;
-      this.setAgentParentSessionId(agentId, firstSessionId);
-      this.updateSubagentWindowParent(agentId);
-      this.updateSubagentWindowVisibility();
-      this.updateConnectionLines();
-    }
+    // NOTE: there are deliberately NO "blame the active session" / "blame the
+    // first session" fallbacks. Both wrote a PERMANENT association from a
+    // guess, so an agent belonging to another pane was mislabelled the moment
+    // it appeared while that pane was focused — and the association then
+    // persisted across restarts. Leaving the agent unattributed is
+    // recoverable and re-runs on the next update; a wrong permanent parent is
+    // not. Unowned agents are hidden by the visibility filter rather than
+    // shown under every session.
   },
 
   /**
@@ -2344,9 +2365,15 @@ Object.assign(CodemanApp.prototype, {
       // Determine visibility based on setting
       let shouldShow;
       if (activeTabOnly) {
-        // Show if: no parent known yet, or parent matches active session
-        const hasKnownParent = !!parentSessionId;
-        shouldShow = !hasKnownParent || parentSessionId === this.activeSessionId;
+        // FAIL CLOSED. This used to be `!hasKnownParent || parent === active`,
+        // which showed every UNATTRIBUTED agent under EVERY session — and with
+        // restored sessions nothing could be attributed at all (measured: 28 of
+        // 28 unowned), so "only this tab's agents" silently showed all of them.
+        // An agent whose owner we cannot establish is not evidence that it
+        // belongs to the tab being viewed. Attribution re-runs as sessions and
+        // agents update, so a genuinely-owned agent appears as soon as it is
+        // resolvable rather than being guessed at here.
+        shouldShow = !!parentSessionId && parentSessionId === this.activeSessionId;
       } else {
         // Show all windows (original behavior)
         shouldShow = true;
