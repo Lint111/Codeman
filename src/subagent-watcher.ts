@@ -42,6 +42,22 @@ import { CleanupManager, KeyedDebouncer } from './utils/index.js';
 import { CompositeSubagentWatcher } from './composite-subagent-watcher.js';
 import { codexDispatchWatcher } from './codex-dispatch-watcher.js';
 
+/**
+ * Recover the owning Workflow run from an agent file's path.
+ *
+ * Workflow agents are written to `subagents/workflows/<runId>/agent-<id>.jsonl`
+ * while plain Task agents sit directly in `subagents/`. Both are discovered by
+ * the same watcher (see `watchWorkflowDirs`), so the PATH is what distinguishes
+ * them — and it is already known at discovery time, which is why this is
+ * derived here rather than threaded through as another parameter.
+ *
+ * Returns undefined for a plain subagent.
+ */
+export function workflowRunIdFromPath(filePath: string): string | undefined {
+  // Normalise Windows separators so a path from either platform matches.
+  return /[/\\]subagents[/\\]workflows[/\\]([^/\\]+)[/\\]/.exec(filePath)?.[1];
+}
+
 // ========== Types ==========
 
 export interface SubagentInfo {
@@ -66,6 +82,19 @@ export interface SubagentInfo {
   source?: 'native' | 'script' | string;
   providerSessionId?: string; // Provider-native worker/thread identity
   canKill?: boolean; // False when the source cannot safely identify the worker process
+  /**
+   * Owning Workflow/ultracode run (`wf_<id>`) when this agent was spawned by
+   * the Workflow tool rather than a plain Task call.
+   *
+   * Workflow agents live at `subagents/workflows/<runId>/agent-<id>.jsonl` and
+   * are picked up by the same watcher as flat `subagents/agent-<id>.jsonl`
+   * ones, so both kinds arrive in the subagent list indistinguishable from each
+   * other. Carrying the run id lets the UI mark them without the subagent side
+   * having to consult workflow state — `workflow-run-watcher` stays standalone
+   * (see the ultracode invariant in CLAUDE.md); this is derived purely from the
+   * path the file was already discovered at.
+   */
+  workflowRunId?: string;
 }
 
 export interface SubagentToolCall {
@@ -1403,6 +1432,7 @@ export class SubagentWatcher extends EventEmitter {
       entryCount: 0,
       fileSize: fileStat.size,
       description,
+      workflowRunId: workflowRunIdFromPath(filePath),
     };
 
     // Enforce MAX_TRACKED_AGENTS during insertion — evict oldest inactive agent
@@ -1498,6 +1528,7 @@ export class SubagentWatcher extends EventEmitter {
       entryCount: 0,
       fileSize: fileStat.size,
       description,
+      workflowRunId: workflowRunIdFromPath(metaPath),
     };
 
     if (this.agentInfo.size >= MAX_TRACKED_AGENTS) {

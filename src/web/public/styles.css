@@ -8829,6 +8829,26 @@ kbd {
   letter-spacing: 0;
 }
 
+/* Marks a subagent that belongs to an ultracode/Workflow run. Those agents are
+   discovered from subagents/workflows/<runId>/ and land in the same list as
+   plain Task agents, so without this an ultracode fleet is indistinguishable
+   from ordinary subagents. Clicking jumps to the owning run. */
+.subagent-ultracode-badge {
+  background: var(--purple, #a78bfa);
+  border-radius: 4px;
+  color: #1e1b3a;
+  cursor: pointer;
+  font-size: 0.55rem;
+  font-weight: 600;
+  letter-spacing: 0;
+  padding: 0.1rem 0.35rem;
+  text-transform: uppercase;
+}
+
+.subagent-ultracode-badge:hover {
+  filter: brightness(1.15);
+}
+
 .subagent-model-badge.haiku {
   background: #4ade80;
   color: #052e16;

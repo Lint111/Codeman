@@ -1616,6 +1616,13 @@ Object.assign(CodemanApp.prototype, {
     const modelBadge = agent.modelShort
       ? `<span class="subagent-model-badge ${escapeHtml(agent.modelShort)}">${escapeHtml(agent.modelShort)}</span>`
       : '';
+    // Workflow-spawned agents arrive in this same list (they are discovered from
+    // subagents/workflows/<runId>/), so without a marker an ultracode fleet is
+    // indistinguishable from plain Task agents. Clicking focuses the owning run
+    // in the ultracode panel rather than duplicating run detail here.
+    const ultracodeBadge = agent.workflowRunId
+      ? `<span class="subagent-ultracode-badge" title="Part of ultracode run ${escapeHtml(agent.workflowRunId)}" onclick="app.focusUltracodeRun(${escapeHtml(JSON.stringify(agent.workflowRunId))})">ultracode</span>`
+      : '';
     const tokenStats = (agent.totalInputTokens || agent.totalOutputTokens)
       ? `<span>Tokens: ${this.formatTokenCount(agent.totalInputTokens || 0)}↓ ${this.formatTokenCount(agent.totalOutputTokens || 0)}↑</span>`
       : '';
@@ -1623,6 +1630,7 @@ Object.assign(CodemanApp.prototype, {
       <div class="subagent-detail-header">
         <span class="subagent-id" title="${escapeHtml(agent.description || agent.agentId)}">${escapeHtml(detailTitle.length > 60 ? detailTitle.substring(0, 60) + '...' : detailTitle)}</span>
         ${modelBadge}
+        ${ultracodeBadge}
         <span class="subagent-status ${agent.status}">${agent.status}</span>
         <button class="subagent-transcript-btn" onclick="app.viewSubagentTranscript(${escapeHtml(JSON.stringify(agent.agentId))})">
           Transcript

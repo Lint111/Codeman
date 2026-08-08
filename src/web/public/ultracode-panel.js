@@ -89,6 +89,31 @@ Object.assign(CodemanApp.prototype, {
     }
   },
 
+  /**
+   * Reveal a workflow run from OUTSIDE the ultracode panel — currently the
+   * `ultracode` badge on a subagent card.
+   *
+   * Workflow-spawned agents appear in the subagents list (they are discovered
+   * from `subagents/workflows/<runId>/`), so the badge is the only place a user
+   * learns that an agent belongs to a run. Clicking it has to work even when the
+   * panel is closed, hence the explicit un-hide before selecting.
+   *
+   * Deliberately a one-way jump: the subagent side never reads workflow state,
+   * which keeps `workflow-run-watcher` standalone (see the ultracode invariant
+   * in CLAUDE.md). All it passes is the run id the agent's own file path
+   * already carried.
+   */
+  focusUltracodeRun(runId) {
+    if (!runId) return;
+    const panel = document.getElementById('ultracodeAgentsPanel');
+    if (panel) {
+      panel.classList.remove('hidden');
+      panel.classList.add('open');
+    }
+    this.selectWorkflowRun(runId);
+    panel?.scrollIntoView?.({ block: 'nearest' });
+  },
+
   // ----- Selection -----
   selectWorkflowRun(runId) {
     this._ensureWorkflowState();
