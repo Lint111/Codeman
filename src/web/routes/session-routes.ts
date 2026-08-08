@@ -1214,7 +1214,22 @@ export function registerSessionRoutes(
         // Replayed snapshots sometimes repeat an identical text block. Distinct
         // progress/final blocks are kept, but remain inside one Claude card.
         if (currentAssistantFragments.has(text)) continue;
-        previous.text += `\n\n${text}`;
+        // ⚠️ Separate the fragments with a RULE, not just a blank line.
+        //
+        // A logical turn is many JSONL rows, and the only boundary this loop
+        // recognises is a real user row — tool_result rows are filtered out
+        // above, so every reply the agent gives between two tool calls lands in
+        // this branch. Joining them with `\n\n` alone concatenates them into one
+        // card with nothing marking where one reply ended and the next began: a
+        // transcript with 483 text-bearing assistant rows collapsed into 46
+        // cards, several over 10k chars. Markdown then reflows the seam — a
+        // heading or list that opened a new fragment reads as a continuation of
+        // the previous one, which is the "formatting is lost" report.
+        //
+        // `---` is a thematic break in GFM and renders as a divider, so the
+        // fragments stay in ONE Claude card (the original intent) while the
+        // boundary survives rendering.
+        previous.text += `\n\n---\n\n${text}`;
         previous.timestamp = entry.timestamp || previous.timestamp;
         currentAssistantFragments.add(text);
       } else {

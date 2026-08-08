@@ -139,17 +139,49 @@ describe('GET /api/sessions/:id/last-response (claude)', () => {
         { role: 'user', text: 'first prompt', timestamp: '2026-07-21T00:00:00Z' },
         {
           role: 'assistant',
-          text: 'Checking the files.\n\nThe first result is ready.',
+          text: 'Checking the files.\n\n---\n\nThe first result is ready.',
           timestamp: '2026-07-21T00:00:03Z',
         },
         { role: 'user', text: 'second prompt', timestamp: '2026-07-21T00:00:00Z' },
-        { role: 'assistant', text: 'First half.\n\nSecond half.', timestamp: '2026-07-21T00:00:06Z' },
+        { role: 'assistant', text: 'First half.\n\n---\n\nSecond half.', timestamp: '2026-07-21T00:00:06Z' },
       ],
     });
     expect(session.adoptClaudeSessionId).toHaveBeenCalledWith(conversationId);
 
     const brief = await getLastResponse(restoredId);
     expect(brief.body.data).toEqual({ text: 'Second half.', timestamp: '2026-07-21T00:00:06Z' });
+  });
+
+  // Tool-call rounds are not user turns, so every reply between two tool calls
+  // merges into ONE assistant card. Joined with a bare blank line, a fragment
+  // that opens with a heading or list is reflowed by markdown as a continuation
+  // of the previous fragment — the "formatting is lost" symptom. Measured on a
+  // live session: 483 text-bearing assistant rows collapsed to 46 cards, the
+  // largest over 10k chars. A `---` thematic break keeps the fragments in one
+  // card while surviving rendering as a visible boundary.
+  it('separates merged assistant fragments so markdown cannot reflow across them', async () => {
+    const sessionId = harness.ctx._session.id;
+    const session = harness.ctx._session as typeof harness.ctx._session & {
+      claudeSessionId: string;
+      adoptClaudeSessionId: ReturnType<typeof vi.fn>;
+    };
+    session.claudeSessionId = sessionId;
+    session.adoptClaudeSessionId = vi.fn();
+    writeTranscript(sessionId, [
+      userEntry('do the thing'),
+      assistantEntry('Prose ending a fragment.', '2026-07-21T00:00:01Z'),
+      { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'tool-9' }] } },
+      { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'tool-9' }] } },
+      assistantEntry('## Heading that must stay a heading', '2026-07-21T00:00:02Z'),
+    ]);
+
+    const { body } = await getLastResponse(sessionId, true);
+    const assistant = body.data.messages.find((m: { role: string }) => m.role === 'assistant');
+
+    expect(assistant.text).toBe('Prose ending a fragment.\n\n---\n\n## Heading that must stay a heading');
+    // The heading must begin its own line — glued to the previous paragraph it
+    // renders as literal text rather than a heading.
+    expect(assistant.text).toMatch(/\n## Heading/);
   });
 
   it('keeps an identical user prompt when it occurs again after an assistant response', async () => {
