@@ -12273,6 +12273,28 @@ body.subagent-viewer-page {
   color: var(--green);
 }
 
+/* Close control for a tiled transcript popup. Each open transcript shrinks
+   every other one's share of the grid, so closing has to be as cheap as
+   opening — hence a always-visible target here and Esc as the keyboard path. */
+.subagent-viewer-close {
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-dim);
+  cursor: pointer;
+  flex: none;
+  font: 400 1rem/1 var(--ui-font);
+  height: 24px;
+  width: 24px;
+  padding: 0;
+}
+
+.subagent-viewer-close:hover {
+  background: var(--red, #e05561);
+  border-color: var(--red, #e05561);
+  color: #fff;
+}
+
 .subagent-viewer-scroller {
   min-height: 0;
   overflow: auto;

@@ -1958,19 +1958,147 @@ Object.assign(CodemanApp.prototype, {
     this.openSubagentWindow(agentId, { focusFileBrowser: false, transcriptMode: 'transcript' });
   },
 
+  /** Live transcript popups, newest last. Closed ones are pruned on each open. */
+  _liveSubagentTranscriptPopups() {
+    if (!this._subagentTranscriptPopups) {
+      this._subagentTranscriptPopups = new Map();
+      // Installed here rather than at boot so a session that never opens a
+      // transcript adds no listener. Same-origin only: the popup is our own
+      // /subagent/ page, and an unchecked handler would accept messages from
+      // any window that has a reference to this one.
+      window.addEventListener('message', (event) => {
+        if (event.origin !== location.origin) return;
+        if (event.data?.type !== 'codeman:subagent-transcript-closed') return;
+        this._onSubagentTranscriptClosed(event.data.agentId);
+      });
+    }
+    for (const [id, ref] of [...this._subagentTranscriptPopups]) {
+      if (!ref || ref.closed) this._subagentTranscriptPopups.delete(id);
+    }
+    return this._subagentTranscriptPopups;
+  },
+
+  /**
+   * Tile `count` transcript popups over the available screen.
+   *
+   * `screen.availWidth/availHeight` exclude OS chrome (taskbar/dock), and
+   * `availLeft/availTop` place the grid on the CORRECT monitor in a
+   * multi-display setup — without them a popup can land on the primary screen
+   * while Codeman is on a secondary one. Both are non-standard but widely
+   * supported; the `?? 0` keeps a browser that omits them on-screen.
+   *
+   * Columns grow before rows so two transcripts sit SIDE BY SIDE (the common
+   * compare-two case) rather than stacked into short, wide strips.
+   */
+  _subagentPopupGridRect(index, count) {
+    const cols = Math.ceil(Math.sqrt(Math.max(1, count)));
+    const rows = Math.ceil(count / cols);
+    const availLeft = window.screen.availLeft ?? 0;
+    const availTop = window.screen.availTop ?? 0;
+    const availWidth = window.screen.availWidth || window.innerWidth;
+    const availHeight = window.screen.availHeight || window.innerHeight;
+    const width = Math.floor(availWidth / cols);
+    const height = Math.floor(availHeight / rows);
+    return {
+      // Floor to whole pixels: fractional feature values are ignored outright
+      // by some browsers, which silently drops the whole positioning request.
+      left: Math.round(availLeft + (index % cols) * width),
+      top: Math.round(availTop + Math.floor(index / cols) * height),
+      width: Math.max(360, width),
+      height: Math.max(320, height),
+    };
+  },
+
+  /**
+   * Re-tile every live transcript popup into a grid.
+   *
+   * ⚠️ Best-effort by design. `moveTo`/`resizeTo` only work on windows this
+   * page opened, and a browser is free to ignore them (or to have honoured
+   * `window.open` as a TAB, which has no geometry at all). Every call is
+   * wrapped so one refusal cannot abort the rest of the layout, and nothing
+   * downstream depends on the move having happened.
+   */
+  _retileSubagentTranscriptPopups() {
+    const popups = [...this._liveSubagentTranscriptPopups().values()];
+    popups.forEach((popup, index) => {
+      const rect = this._subagentPopupGridRect(index, popups.length);
+      try {
+        popup.resizeTo(rect.width, rect.height);
+        popup.moveTo(rect.left, rect.top);
+      } catch {
+        /* cross-origin or tab-mode popup — geometry is not ours to set */
+      }
+    });
+  },
+
+  /**
+   * Close every live transcript popup.
+   *
+   * The grid divides one screen, so each extra transcript shrinks the rest —
+   * a one-click "close all" is what keeps that from becoming a chore.
+   */
+  closeSubagentTranscriptPopups() {
+    const popups = this._liveSubagentTranscriptPopups();
+    let closed = 0;
+    for (const popup of popups.values()) {
+      try {
+        popup.close();
+        closed += 1;
+      } catch {
+        /* already gone or refused — pruned on the next open */
+      }
+    }
+    popups.clear();
+    if (closed > 0) this.showToast(`Closed ${closed} transcript${closed === 1 ? '' : 's'}`, 'success');
+    return closed;
+  },
+
+  /**
+   * A transcript popup told us it is closing. Drop it and reflow the rest so
+   * the survivors immediately reclaim the freed screen space, rather than
+   * waiting for the next open to re-tile.
+   */
+  _onSubagentTranscriptClosed(agentId) {
+    this._subagentTranscriptPopups?.delete(agentId);
+    // The window is still closing when the message arrives; let it finish so
+    // it is not counted as live by the prune inside the re-tile.
+    setTimeout(() => this._retileSubagentTranscriptPopups(), 50);
+  },
+
   openSubagentBrowserTab(agentId) {
     if (!this.subagents.has(agentId)) return null;
     const target = `codeman-subagent-${String(agentId).replace(/[^a-z0-9_-]/gi, '-').slice(0, 120)}`;
+    const popups = this._liveSubagentTranscriptPopups();
+    const existing = popups.get(agentId);
+
+    // Re-opening the same transcript must not shrink the grid share of the
+    // others — it is already counted, so reuse its slot.
+    const alreadyOpen = existing && !existing.closed;
+    const index = alreadyOpen ? [...popups.keys()].indexOf(agentId) : popups.size;
+    const rect = this._subagentPopupGridRect(index, alreadyOpen ? popups.size : popups.size + 1);
+
     let transcriptTab = null;
     try {
-      transcriptTab = window.open(`/subagent/${encodeURIComponent(agentId)}`, target);
+      // Explicit geometry is what makes the browser treat this as a POPUP
+      // rather than a tab; a tab cannot be positioned at all. Without any
+      // other transcript open we still pass a rect so the first and second
+      // windows tile consistently.
+      const features = `popup=yes,width=${rect.width},height=${rect.height},left=${rect.left},top=${rect.top}`;
+      transcriptTab = window.open(`/subagent/${encodeURIComponent(agentId)}`, target, features);
       transcriptTab?.focus();
     } catch {
       transcriptTab = null;
     }
     if (!transcriptTab) {
       this.showToast('Allow pop-ups to open the transcript tab', 'warning');
+      return null;
     }
+
+    popups.set(agentId, transcriptTab);
+    // Re-tile AFTER registering: the new window changes every other window's
+    // share of the screen. Deferred a frame because a just-opened window can
+    // ignore geometry calls until it has laid out.
+    requestAnimationFrame(() => this._retileSubagentTranscriptPopups());
     return transcriptTab;
   },
 

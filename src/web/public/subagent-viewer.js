@@ -8,6 +8,7 @@
   const agentId = decodeURIComponent(location.pathname.match(/^\/subagent\/([^/]+)$/)?.[1] || '');
   const elements = {
     returnButton: document.getElementById('subagentViewerReturn'),
+    close: document.getElementById('subagentViewerClose'),
     title: document.getElementById('subagentViewerTitle'),
     workspace: document.getElementById('subagentViewerWorkspace'),
     status: document.getElementById('subagentViewerStatus'),
@@ -111,6 +112,37 @@
   }
 
   elements.returnButton.addEventListener('click', returnToCodeman);
+
+  /**
+   * Close this transcript window and let the opener re-tile the survivors.
+   *
+   * `window.close()` is only permitted on a script-opened window, which this
+   * always is (it is reached via `window.open` from Codeman). If a browser
+   * refuses anyway, fall back to returning rather than leaving a dead-end
+   * button.
+   */
+  function closeTranscriptWindow() {
+    try {
+      if (window.opener && !window.opener.closed) {
+        // Ask the opener to reflow the remaining popups once this one is gone.
+        // Guarded: the opener may be an older build without the handler.
+        window.opener.postMessage({ type: 'codeman:subagent-transcript-closed', agentId }, location.origin);
+      }
+    } catch {
+      /* opener navigated away or is cross-origin — closing still works */
+    }
+    window.close();
+    // Reached only if close() was refused.
+    setTimeout(() => {
+      if (!window.closed) returnToCodeman();
+    }, 150);
+  }
+
+  elements.close?.addEventListener('click', closeTranscriptWindow);
+  document.addEventListener('keydown', (event) => {
+    // Esc is the expected close gesture for a single-purpose popup.
+    if (event.key === 'Escape' && !event.defaultPrevented) closeTranscriptWindow();
+  });
   window.addEventListener('beforeunload', () => {
     abortController?.abort();
     tailWindow.dispose();
