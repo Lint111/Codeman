@@ -32,13 +32,31 @@ import { watch, existsSync, FSWatcher } from 'node:fs';
 import { createReadStream } from 'node:fs';
 import { createInterface } from 'node:readline';
 import { homedir } from 'node:os';
-import { join, basename, dirname } from 'node:path';
+import { join, basename, dirname, isAbsolute } from 'node:path';
 import { execFile } from 'node:child_process';
 import { readFile, readdir, stat as statAsync } from 'node:fs/promises';
 import { PENDING_TOOL_CALL_TTL_MS, MAX_PENDING_TOOL_CALLS, MAX_TRACKED_AGENTS } from './config/map-limits.js';
 import { STALE_DATA_MAX_AGE_MS } from './config/server-timing.js';
 import { FILE_PEEK_BYTES } from './config/buffer-limits.js';
 import { CleanupManager, KeyedDebouncer } from './utils/index.js';
+import { CompositeSubagentWatcher } from './composite-subagent-watcher.js';
+import { codexDispatchWatcher } from './codex-dispatch-watcher.js';
+
+/**
+ * Recover the owning Workflow run from an agent file's path.
+ *
+ * Workflow agents are written to `subagents/workflows/<runId>/agent-<id>.jsonl`
+ * while plain Task agents sit directly in `subagents/`. Both are discovered by
+ * the same watcher (see `watchWorkflowDirs`), so the PATH is what distinguishes
+ * them — and it is already known at discovery time, which is why this is
+ * derived here rather than threaded through as another parameter.
+ *
+ * Returns undefined for a plain subagent.
+ */
+export function workflowRunIdFromPath(filePath: string): string | undefined {
+  // Normalise Windows separators so a path from either platform matches.
+  return /[/\\]subagents[/\\]workflows[/\\]([^/\\]+)[/\\]/.exec(filePath)?.[1];
+}
 
 // ========== Types ==========
 
@@ -55,10 +73,28 @@ export interface SubagentInfo {
   fileSize: number;
   description?: string; // Task description from first user message
   model?: string; // Full model name (e.g., "claude-sonnet-4-20250514")
-  modelShort?: 'haiku' | 'sonnet' | 'opus'; // Short model identifier
+  modelShort?: 'haiku' | 'sonnet' | 'opus' | 'codex'; // Short model/provider identifier
   totalInputTokens?: number; // Running total of input tokens
   totalOutputTokens?: number; // Running total of output tokens
   pid?: number; // Cached process ID for fast liveness checks
+  workingDir?: string; // Provider-reported workspace for file/repository browsing
+  provider?: 'claude' | 'codex' | 'opencode' | 'gemini' | string;
+  source?: 'native' | 'script' | string;
+  providerSessionId?: string; // Provider-native worker/thread identity
+  canKill?: boolean; // False when the source cannot safely identify the worker process
+  /**
+   * Owning Workflow/ultracode run (`wf_<id>`) when this agent was spawned by
+   * the Workflow tool rather than a plain Task call.
+   *
+   * Workflow agents live at `subagents/workflows/<runId>/agent-<id>.jsonl` and
+   * are picked up by the same watcher as flat `subagents/agent-<id>.jsonl`
+   * ones, so both kinds arrive in the subagent list indistinguishable from each
+   * other. Carrying the run id lets the UI mark them without the subagent side
+   * having to consult workflow state — `workflow-run-watcher` stays standalone
+   * (see the ultracode invariant in CLAUDE.md); this is derived purely from the
+   * path the file was already discovered at.
+   */
+  workflowRunId?: string;
 }
 
 export interface SubagentToolCall {
@@ -95,6 +131,7 @@ export interface SubagentTranscriptEntry {
   timestamp: string;
   agentId: string;
   sessionId: string;
+  cwd?: string;
   message?: {
     role: string;
     model?: string; // Model used for this message (e.g., "claude-sonnet-4-20250514")
@@ -146,6 +183,17 @@ const LIVENESS_CHECK_MS = 10000; // Check if subagent processes are still alive 
 const FILE_ALIVE_THRESHOLD_MS = 30000; // File mtime within 30s = agent alive (primary check)
 const STALE_COMPLETED_MAX_AGE_MS = STALE_DATA_MAX_AGE_MS; // Remove completed agents older than 1 hour
 const STALE_IDLE_MAX_AGE_MS = 4 * 60 * 60 * 1000; // Remove idle agents older than 4 hours
+// How long an 'idle' agent still counts as LIVE for the panel payload.
+//
+// An agent is demoted to 'idle' after only IDLE_TIMEOUT_MS (30s) of quiet, so
+// 'idle' covers everything from an agent mid-thought to one whose process died
+// hours ago. Exempting all of them from the recency window (as a first pass at
+// this did) means nothing leaves the panel until cleanupStaleAgents drops it at
+// STALE_IDLE_MAX_AGE_MS — 4 hours of accumulated dead runs.
+//
+// 20 minutes is ~40x the idle threshold: comfortably longer than any real gap
+// between an agent's tool calls, far short of "still listed hours later".
+const IDLE_LIVENESS_MAX_AGE_MS = 20 * 60 * 1000;
 const STARTUP_MAX_FILE_AGE_MS = 4 * 60 * 60 * 1000; // Only load files modified in last 4 hours on startup
 
 // Internal Claude Code agent patterns to filter out (not real user-initiated subagents)
@@ -716,12 +764,29 @@ export class SubagentWatcher extends EventEmitter {
   }
 
   /**
-   * Get recent subagents (modified within specified minutes)
+   * Get recent subagents (modified within specified minutes).
+   *
+   * A RUNNING agent is always included. An 'idle' one is included only while it
+   * is plausibly still alive (IDLE_LIVENESS_MAX_AGE_MS), because resetIdleTimer()
+   * demotes an agent after just IDLE_TIMEOUT_MS of quiet — so 'idle' spans both
+   * an agent between tool calls and one whose process is long gone.
+   *
+   * This feeds the SSE initial state that populates the subagents panel, and the
+   * frontend never back-fills from /api/subagents, so both directions bite:
+   * too strict and a thinking agent vanishes from its own session; too loose and
+   * the panel fills with hours-old runs that cleanupStaleAgents has not yet
+   * reaped (it waits STALE_IDLE_MAX_AGE_MS = 4h).
    */
   getRecentSubagents(minutes: number = 60): SubagentInfo[] {
-    const cutoff = Date.now() - minutes * 60 * 1000;
+    const now = Date.now();
+    const cutoff = now - minutes * 60 * 1000;
+    const idleCutoff = now - IDLE_LIVENESS_MAX_AGE_MS;
     return Array.from(this.agentInfo.values())
-      .filter((info) => info.lastActivityAt > cutoff)
+      .filter((info) => {
+        if (info.status === 'active') return true;
+        if (info.status === 'idle') return info.lastActivityAt > Math.min(cutoff, idleCutoff);
+        return info.lastActivityAt > cutoff;
+      })
       .sort((a, b) => b.lastActivityAt - a.lastActivityAt);
   }
 
@@ -1120,6 +1185,19 @@ export class SubagentWatcher extends EventEmitter {
   }
 
   /**
+   * Force a discovery pass now, outside the fs-watch cadence.
+   *
+   * Discovery normally rides on directory watches, which can miss a
+   * subagents/workflows/<runId>/ directory created while the watcher was
+   * settling — leaving a plainly-running agent absent from the panel with no
+   * way for the user to ask for a recheck.
+   */
+  async rescan(): Promise<void> {
+    if (!this.isRunning()) return;
+    await this.scanForSubagents();
+  }
+
+  /**
    * Scan for all subagent directories (async to avoid blocking event loop)
    */
   private async scanForSubagents(): Promise<void> {
@@ -1395,6 +1473,7 @@ export class SubagentWatcher extends EventEmitter {
       entryCount: 0,
       fileSize: fileStat.size,
       description,
+      workflowRunId: workflowRunIdFromPath(filePath),
     };
 
     // Enforce MAX_TRACKED_AGENTS during insertion — evict oldest inactive agent
@@ -1490,6 +1569,7 @@ export class SubagentWatcher extends EventEmitter {
       entryCount: 0,
       fileSize: fileStat.size,
       description,
+      workflowRunId: workflowRunIdFromPath(metaPath),
     };
 
     if (this.agentInfo.size >= MAX_TRACKED_AGENTS) {
@@ -1550,6 +1630,10 @@ export class SubagentWatcher extends EventEmitter {
     const info = this.agentInfo.get(agentId);
 
     if (info) {
+      if (entry.cwd && isAbsolute(entry.cwd) && entry.cwd !== info.workingDir) {
+        info.workingDir = entry.cwd;
+        this.emit('subagent:updated', info);
+      }
       this._processModelInfo(entry, info);
       this._processTokenInfo(entry, info);
 
@@ -1846,4 +1930,5 @@ export class SubagentWatcher extends EventEmitter {
 }
 
 // Export singleton instance
-export const subagentWatcher = new SubagentWatcher();
+export const claudeSubagentWatcher = new SubagentWatcher();
+export const subagentWatcher = new CompositeSubagentWatcher([claudeSubagentWatcher, codexDispatchWatcher]);
