@@ -26,3 +26,4 @@ export { registerAdminRoutes } from './admin-routes.js';
 export { registerWsRoutes } from './ws-routes.js';
 export { registerVoiceRoutes } from './voice-routes.js';
 export { registerWebviewRoutes, tryWebviewRefererFallback } from './webview-routes.js';
+export { registerExternalEventRoutes } from './external-event-routes.js';

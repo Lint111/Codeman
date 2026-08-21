@@ -969,6 +969,9 @@ const SSE_EVENTS = {
 
   // Web tabs (dashboard URLs)
   WEBVIEW_CHANGED: 'webview:changed',
+  INTEGRATION_JOB_UPDATED: 'integration:jobUpdated',
+  INTEGRATION_JOB_COMPLETED: 'integration:jobCompleted',
+  INTEGRATION_JOB_FAILED: 'integration:jobFailed',
 };
 
 // ═══════════════════════════════════════════════════════════════

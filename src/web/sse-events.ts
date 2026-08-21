@@ -450,6 +450,13 @@ export const SessionOrderChanged = 'session:orderChanged' as const;
  *  re-fetches the list rather than patching from the payload. */
 export const WebviewChanged = 'webview:changed' as const;
 
+/** A registered external integration delivered a validated job projection. */
+export const IntegrationJobUpdated = 'integration:jobUpdated' as const;
+/** A registered external integration delivered a completed job projection. */
+export const IntegrationJobCompleted = 'integration:jobCompleted' as const;
+/** A registered external integration delivered a failed job projection. */
+export const IntegrationJobFailed = 'integration:jobFailed' as const;
+
 // ─── Namespace Re-export ─────────────────────────────────────────────────────
 
 /**
@@ -665,4 +672,9 @@ export const SseEvent = {
 
   // Web tabs (dashboard URLs)
   WebviewChanged,
+
+  // External integrations
+  IntegrationJobUpdated,
+  IntegrationJobCompleted,
+  IntegrationJobFailed,
 } as const;

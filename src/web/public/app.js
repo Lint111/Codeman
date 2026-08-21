@@ -209,6 +209,9 @@ const _SSE_HANDLER_MAP = [
   [SSE_EVENTS.TASK_COMPLETED, '_onTaskCompleted'],
   [SSE_EVENTS.TASK_FAILED, '_onTaskFailed'],
   [SSE_EVENTS.TASK_UPDATED, '_onTaskUpdated'],
+  [SSE_EVENTS.INTEGRATION_JOB_UPDATED, '_onExternalJobUpdated'],
+  [SSE_EVENTS.INTEGRATION_JOB_COMPLETED, '_onExternalJobCompleted'],
+  [SSE_EVENTS.INTEGRATION_JOB_FAILED, '_onExternalJobFailed'],
 
   // Mux (tmux)
   [SSE_EVENTS.MUX_CREATED, '_onMuxCreated'],
@@ -1767,6 +1770,7 @@ class CodemanApp {
 
   _onInit(data) {
     _crashDiag.log(`INIT: ${data.sessions?.length || 0} sessions`);
+    this.loadExternalJobs?.();
     this.handleInit(data);
   }
 

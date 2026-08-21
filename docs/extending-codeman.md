@@ -9,12 +9,12 @@ exist, so it does not hand that away for an extension mechanism.
 Instead there are four seams that already work, from any language, with nothing
 installed:
 
-| You want to | Use | Runs where |
-| --- | --- | --- |
-| Show your own UI inside Codeman | [Web tabs](#seam-1-web-tabs) | Your own process, rendered as a tab |
-| React when an agent needs you | [SSE events](#seam-2-sse-events) | Anywhere that can hold an HTTP connection |
-| Drive Codeman from a script | [HTTP API](#seam-3-http-api-and-cli) or the `codeman` CLI | Anywhere |
-| React inside a Claude session | [Hooks](#seam-4-hooks) | The agent's own machine |
+| You want to                     | Use                                                       | Runs where                                |
+| ------------------------------- | --------------------------------------------------------- | ----------------------------------------- |
+| Show your own UI inside Codeman | [Web tabs](#seam-1-web-tabs)                              | Your own process, rendered as a tab       |
+| React when an agent needs you   | [SSE events](#seam-2-sse-events)                          | Anywhere that can hold an HTTP connection |
+| Drive Codeman from a script     | [HTTP API](#seam-3-http-api-and-cli) or the `codeman` CLI | Anywhere                                  |
+| React inside a Claude session   | [Hooks](#seam-4-hooks)                                    | The agent's own machine                   |
 
 Everything below is covered by the stability promise in
 [`versioning-policy.md`](versioning-policy.md): endpoint paths, the response
@@ -53,7 +53,7 @@ the status code before you parse, or a missing password looks like a broken endp
 covers the in-session case: the `CODEMAN_MUX`, `CODEMAN_API_URL`,
 `CODEMAN_SESSION_ID` and `CODEMAN_HOOK_SECRET_FILE` variables that let a CLI
 running inside Codeman find the API and avoid acting on itself. This page is for
-code running *outside* a session.
+code running _outside_ a session.
 
 ## Seam 1: Web tabs
 
@@ -107,18 +107,18 @@ the API that spawns agents. Only mark your own trusted code.
 
 The ones most integrations want:
 
-| Event | Meaning |
-| --- | --- |
-| `session:created`, `session:deleted` | A session appeared or went away |
-| `session:idle` | The agent stopped working |
-| `session:completion` | A completion message was detected |
-| `session:exit`, `session:error` | The session ended or failed |
-| `hook:permission_prompt` | The agent is asking for permission |
-| `hook:idle_prompt`, `hook:stop` | The agent is waiting on you, or stopped |
-| `hook:task_completed`, `task:completed` | Work finished |
-| `subagent:discovered`, `subagent:completed` | Background agent lifecycle |
-| `mux:died` | A multiplexer session died unexpectedly |
-| `cron:runCreated`, `cron:runUpdated` | Scheduled job activity |
+| Event                                       | Meaning                                 |
+| ------------------------------------------- | --------------------------------------- |
+| `session:created`, `session:deleted`        | A session appeared or went away         |
+| `session:idle`                              | The agent stopped working               |
+| `session:completion`                        | A completion message was detected       |
+| `session:exit`, `session:error`             | The session ended or failed             |
+| `hook:permission_prompt`                    | The agent is asking for permission      |
+| `hook:idle_prompt`, `hook:stop`             | The agent is waiting on you, or stopped |
+| `hook:task_completed`, `task:completed`     | Work finished                           |
+| `subagent:discovered`, `subagent:completed` | Background agent lifecycle              |
+| `mux:died`                                  | A multiplexer session died unexpectedly |
+| `cron:runCreated`, `cron:runUpdated`        | Scheduled job activity                  |
 
 ### Filtering
 
@@ -153,6 +153,45 @@ for (;;) {
   }
 }
 ```
+
+## Seam 2.5: authenticated external events
+
+For a service that needs Codeman to receive job or integration state, use the
+external-event registry rather than trying to publish directly to Codeman's SSE
+stream. SSE remains server-to-client; the inbound side is an authenticated
+webhook that is durably recorded before a typed SSE projection is broadcast.
+
+An administrator creates an integration:
+
+```bash
+curl -u admin:$PASS -X POST http://127.0.0.1:3000/api/v1/integrations \
+  -H 'Content-Type: application/json' \
+  -d '{"id":"codexless","label":"Codexless","owner":"alice","eventTypes":["job.updated","job.completed","job.failed"]}'
+```
+
+The response contains the signing secret once. Store it outside the repository.
+Rotate it with `POST /api/v1/integrations/:id/rotate`; revoke it with
+`DELETE /api/v1/integrations/:id`.
+
+Send events to:
+
+```text
+POST /api/v1/integrations/:id/events
+X-Codeman-Timestamp: <unix seconds>
+X-Codeman-Signature: v1=<sha256 hmac of "timestamp.raw-body">
+```
+
+The event ID is idempotent per integration. Requests outside the timestamp
+window, with an invalid signature, an unregistered event type, or an invalid
+schema are rejected. Accepted events are stored in the bounded external-event
+inbox and projected through typed SSE events such as `integration:jobUpdated`.
+Consumers can recover after reconnecting with `GET /api/v1/integrations/jobs`
+and `GET /api/v1/integrations/events`.
+
+The route has a narrow Basic-auth bypass because the integration HMAC is its
+credential. Host/origin policy, body limits, timestamp validation, signature
+validation, event allowlisting, and multi-user owner routing still apply. It is
+not a general event-broadcast endpoint.
 
 ## Seam 3: HTTP API and CLI
 

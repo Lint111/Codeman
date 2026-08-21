@@ -49,6 +49,8 @@ import { RespawnController, RespawnConfig } from '../respawn-controller.js';
 import type { TerminalMultiplexer } from '../mux-interface.js';
 import { createMultiplexer } from '../mux-factory.js';
 import { getStore } from '../state-store.js';
+import { ExternalEventRegistry } from '../external-event-registry.js';
+import { ExternalEventStore } from '../external-event-store.js';
 import { extractCompletionPhrase } from '../ralph-config.js';
 import { fileStreamManager } from '../file-stream-manager.js';
 import {
@@ -170,6 +172,7 @@ import {
   registerVoiceRoutes,
   registerWebviewRoutes,
   tryWebviewRefererFallback,
+  registerExternalEventRoutes,
 } from './routes/index.js';
 import { CronService } from '../cron/cron-service.js';
 
@@ -246,6 +249,8 @@ export class WebServer extends EventEmitter {
   private cronService!: CronService;
   private sse: SseStreamManager;
   private store = getStore();
+  private externalEventRegistry = new ExternalEventRegistry();
+  private externalEventStore = new ExternalEventStore();
   private port: number;
   private host: string;
   private https: boolean;
@@ -619,6 +624,10 @@ export class WebServer extends EventEmitter {
       broadcastSessionStateDebounced: this.broadcastSessionStateDebounced.bind(this),
       batchTaskUpdate: this.batchTaskUpdate.bind(this),
       getSseClientCount: () => this.sse.remoteClientCount,
+      // ExternalEventPort
+      externalEventRegistry: this.externalEventRegistry,
+      externalEventStore: this.externalEventStore,
+      invalidateLightState: () => this.invalidateLightState(),
       // RespawnPort
       respawnControllers: this.respawnControllers,
       respawnTimers: this.respawnTimers,
@@ -990,6 +999,7 @@ export class WebServer extends EventEmitter {
     registerAdminRoutes(this.app, ctx);
     registerOrchestratorRoutes(this.app, ctx);
     registerWebviewRoutes(this.app, ctx);
+    registerExternalEventRoutes(this.app, ctx);
 
     // Cron: build the service from the same context, recompute
     // due times for any persisted jobs, then expose it to its routes.
@@ -2089,13 +2099,17 @@ export class WebServer extends EventEmitter {
 
   private broadcast(event: string, data: unknown): void {
     // Invalidate caches on structural changes (creation/deletion)
-    if (event === SseEvent.SessionCreated || event === SseEvent.SessionDeleted) {
+    if (event === SseEvent.SessionCreated || event === SseEvent.SessionDeleted || event.startsWith('integration:')) {
       this.cachedLightState = null;
       this.cachedSessionsList = null;
     }
     // Multi-user: derive an ownership routing hint so an event only reaches the
     // clients entitled to it (no-op in single-user — hint stays undefined).
     this.sse.broadcast(event, data, isMultiUserMode() ? this.deriveSseHint(event, data) : undefined);
+  }
+
+  private invalidateLightState(): void {
+    this.cachedLightState = null;
   }
 
   /**
@@ -2141,6 +2155,10 @@ export class WebServer extends EventEmitter {
       const d = (data ?? {}) as { sessionId?: string; id?: string; session?: { id?: string } };
       const sessionId = d.sessionId ?? d.id ?? d.session?.id;
       const owner = sessionId ? this.sessions.get(sessionId)?.owner : undefined;
+      return { owner, sessionScoped: true };
+    }
+    if (event.startsWith('integration:')) {
+      const owner = (data as { owner?: string } | null)?.owner;
       return { owner, sessionScoped: true };
     }
     // #20/#38: clipboard:write writes into the receiver's OS clipboard — route it to

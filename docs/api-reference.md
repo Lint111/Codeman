@@ -66,17 +66,17 @@ The single source of truth is `ErrorStatus` / `httpStatusForErrorCode()` in
 `src/types/api.ts`. Clients should branch on `errorCode` (stable) and may rely on
 the HTTP status.
 
-| `errorCode` | HTTP | Meaning |
-|-------------|------|---------|
-| `INVALID_INPUT` | 400 | Malformed request / failed validation |
-| `UNAUTHORIZED` | 401 | Authentication required or failed |
-| `NOT_FOUND` | 404 | Resource does not exist |
-| `SESSION_BUSY` | 409 | Session is busy |
-| `CONFLICT` | 409 | Conflicts with current state (e.g. already running) |
-| `ALREADY_EXISTS` | 409 | Resource already exists |
-| `OPERATION_FAILED` | 422 | Well-formed but could not be completed |
-| `RATE_LIMITED` | 429 | Too many requests |
-| `INTERNAL_ERROR` | 500 | Unexpected server error |
+| `errorCode`        | HTTP | Meaning                                             |
+| ------------------ | ---- | --------------------------------------------------- |
+| `INVALID_INPUT`    | 400  | Malformed request / failed validation               |
+| `UNAUTHORIZED`     | 401  | Authentication required or failed                   |
+| `NOT_FOUND`        | 404  | Resource does not exist                             |
+| `SESSION_BUSY`     | 409  | Session is busy                                     |
+| `CONFLICT`         | 409  | Conflicts with current state (e.g. already running) |
+| `ALREADY_EXISTS`   | 409  | Resource already exists                             |
+| `OPERATION_FAILED` | 422  | Well-formed but could not be completed              |
+| `RATE_LIMITED`     | 429  | Too many requests                                   |
+| `INTERNAL_ERROR`   | 500  | Unexpected server error                             |
 
 Adding a new error code is non-breaking; removing or renaming one is a major change.
 
@@ -87,10 +87,10 @@ exist because SSE is Codeman's only other "tell me when" channel, and an agent
 driving the API from a shell tool cannot practically hold a stream and parse
 events inline.
 
-| Call | Blocks until |
-|------|--------------|
-| `GET /api/v1/sessions/:id/wait` | one of a set of lifecycle signals fires |
-| `GET /api/v1/sessions/:id/wait-output` | a literal string appears in the session's output |
+| Call                                          | Blocks until                                       |
+| --------------------------------------------- | -------------------------------------------------- |
+| `GET /api/v1/sessions/:id/wait`               | one of a set of lifecycle signals fires            |
+| `GET /api/v1/sessions/:id/wait-output`        | a literal string appears in the session's output   |
 | `POST /api/v1/sessions/:id/input` with `wait` | the input is delivered **and then** a signal fires |
 
 `POST .../input` with `wait` is not the same as a `POST` followed by a separate
@@ -140,13 +140,13 @@ contract is a **marker unique to each call** (`MARK="DONE_$RANDOM"`, send
 
 ### Signals
 
-| Signal | Source | Actually fires for |
-|--------|--------|--------------------|
-| `idle` | the session's own `idle` event | `claude`: yes, on ❯-prompt detection after activity. `shell`: **once only**, ~500 ms after start, and never again. External CLIs: not guaranteed (they render their own TUIs and readiness is output stabilization) |
-| `working` | the session's own `working` event | `claude` only in practice (spinner and work-keyword detection are Claude output formats) |
-| `stop` | the Claude Code `stop` hook, the definitive end-of-turn signal | `claude` only |
-| `blocked` | a `permission_prompt` or `elicitation_dialog` hook | `claude` only, and rarer than it looks: see below |
-| `exit` | no process is behind the session | every mode |
+| Signal    | Source                                                         | Actually fires for                                                                                                                                                                                                  |
+| --------- | -------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `idle`    | the session's own `idle` event                                 | `claude`: yes, on ❯-prompt detection after activity. `shell`: **once only**, ~500 ms after start, and never again. External CLIs: not guaranteed (they render their own TUIs and readiness is output stabilization) |
+| `working` | the session's own `working` event                              | `claude` only in practice (spinner and work-keyword detection are Claude output formats)                                                                                                                            |
+| `stop`    | the Claude Code `stop` hook, the definitive end-of-turn signal | `claude` only                                                                                                                                                                                                       |
+| `blocked` | a `permission_prompt` or `elicitation_dialog` hook             | `claude` only, and rarer than it looks: see below                                                                                                                                                                   |
+| `exit`    | no process is behind the session                               | every mode                                                                                                                                                                                                          |
 
 `stop` is the signal to orchestrate on where it exists; `idle` is a heuristic
 fallback that can flap mid-turn when a spinner pauses. The default set when `until`
@@ -156,12 +156,12 @@ can no longer happen). On a `claude` worker, prefer an explicit `until=stop,exit
 once the session is up: the default set's `idle` also resolves on a spinner pause,
 and on a fresh session the **startup** `idle` (emitted when the CLI first comes up)
 can land inside your first wait window and report a turn that never ran. Measured:
-a session parked on the trust dialog emits no *further* `idle`, so it is the
+a session parked on the trust dialog emits no _further_ `idle`, so it is the
 startup transition, not the dialog, that produces the false success below.
 
 ⚠️ **`exit` means "nothing is running", which includes "not started yet".** The
 server answers from `pid === null` plus a mux-layer pane-death probe, and that
-covers a session that exited — including a worker that died *inside* its tmux pane
+covers a session that exited — including a worker that died _inside_ its tmux pane
 while the local attach client (and therefore `pid`) lives on — one that was
 detached, and one that was **created but never started**. So the first wait
 after `POST /api/v1/sessions` returns `{"signal":"exit","immediate":true}` in
@@ -184,7 +184,7 @@ blocked, and polling `blocked` alone will sit at its timeout.
 
 ⚠️ **On a `shell` session, only `exit` and marker-matching are dependable.** A shell
 session emits its one `idle` at startup and then stays `status: "idle"` forever,
-whatever the pane is doing, so it never emits a *transition*. Since send-and-wait
+whatever the pane is doing, so it never emits a _transition_. Since send-and-wait
 requires a transition (and so does `fresh=1`), both can only time out there:
 a documented default `wait` on a shell worker running `sleep 4` times out at the
 full 25 s. Synchronize hook-less sessions with `wait-output` and a unique marker
@@ -213,11 +213,11 @@ composer. A worked version is in
 
 ### `GET /api/v1/sessions/:id/wait`
 
-| Param | Type | Default | Notes |
-|-------|------|---------|-------|
-| `until` | comma-separated list of `idle,working,stop,blocked,exit` | `stop,idle,exit` | resolves on the first to fire. An unknown token is a `400` naming it, never a silent fallback |
-| `timeout` | positive integer ms | `60000` | **validated first, clamped second.** `0`, a negative value and a fractional value are all `400`s, not clamps; a valid value outside `[1000, 600000]` is clamped and echoed as `wait.timeoutMs` |
-| `fresh` | `0` \| `1` \| `false` \| `true` | `0` | `1` requires an actual transition, ignoring the state at call time |
+| Param     | Type                                                     | Default          | Notes                                                                                                                                                                                          |
+| --------- | -------------------------------------------------------- | ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `until`   | comma-separated list of `idle,working,stop,blocked,exit` | `stop,idle,exit` | resolves on the first to fire. An unknown token is a `400` naming it, never a silent fallback                                                                                                  |
+| `timeout` | positive integer ms                                      | `60000`          | **validated first, clamped second.** `0`, a negative value and a fractional value are all `400`s, not clamps; a valid value outside `[1000, 600000]` is clamped and echoed as `wait.timeoutMs` |
+| `fresh`   | `0` \| `1` \| `false` \| `true`                          | `0`              | `1` requires an actual transition, ignoring the state at call time                                                                                                                             |
 
 ```bash
 curl -s "$API/api/v1/sessions/$SID/wait?until=stop,exit&timeout=60000"
@@ -234,12 +234,12 @@ a plain signal wait, so check the endpoint path before blaming the parameters.
 
 ### `GET /api/v1/sessions/:id/wait-output`
 
-| Param | Type | Default | Notes |
-|-------|------|---------|-------|
-| `match` | literal string, 1 to 200 chars | required | substring match against the PTY stream with ANSI escapes stripped. A match spanning two PTY chunks is found |
-| `nocase` | `0` \| `1` \| `false` \| `true` | `0` | case-insensitive compare. The returned snippet keeps the terminal's original casing |
-| `from` | `now` \| `buffer` | `now` | `buffer` scans the tail of the existing terminal buffer (bounded, 256 KB by default) before blocking |
-| `timeout` | positive integer ms | `60000` | same validation and clamp as `/wait` |
+| Param     | Type                            | Default  | Notes                                                                                                       |
+| --------- | ------------------------------- | -------- | ----------------------------------------------------------------------------------------------------------- |
+| `match`   | literal string, 1 to 200 chars  | required | substring match against the PTY stream with ANSI escapes stripped. A match spanning two PTY chunks is found |
+| `nocase`  | `0` \| `1` \| `false` \| `true` | `0`      | case-insensitive compare. The returned snippet keeps the terminal's original casing                         |
+| `from`    | `now` \| `buffer`               | `now`    | `buffer` scans the tail of the existing terminal buffer (bounded, 256 KB by default) before blocking        |
+| `timeout` | positive integer ms             | `60000`  | same validation and clamp as `/wait`                                                                        |
 
 **Matching is literal, never a pattern.** A `regex` parameter is rejected with a
 `400` rather than ignored, so a caller that assumed otherwise finds out immediately
@@ -291,10 +291,10 @@ hand-written query string decodes to a space.
 
 Two optional fields on the existing endpoint:
 
-| Field | Type | Notes |
-|-------|------|-------|
-| `wait` | `true` or the same comma grammar as `until` | `true` means the default signal set. Omitted keeps the historical fire-and-forget behavior, unchanged. `null`, `false` and an empty string are all read as **absent**, not as an error and not as "wait for the default" |
-| `waitTimeout` | positive integer ms | same validation **and** clamp as `timeout`: `0`, a negative and a fractional value are `400`s, anything valid is clamped into `[1000, 600000]` and echoed as `wait.timeoutMs` |
+| Field         | Type                                        | Notes                                                                                                                                                                                                                    |
+| ------------- | ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `wait`        | `true` or the same comma grammar as `until` | `true` means the default signal set. Omitted keeps the historical fire-and-forget behavior, unchanged. `null`, `false` and an empty string are all read as **absent**, not as an error and not as "wait for the default" |
+| `waitTimeout` | positive integer ms                         | same validation **and** clamp as `timeout`: `0`, a negative and a fractional value are `400`s, anything valid is clamped into `[1000, 600000]` and echoed as `wait.timeoutMs`                                            |
 
 Both are `nullish`, so an explicit `null` from `JSON.stringify` is accepted as
 "absent" rather than failing validation. That is deliberate: `.optional()` would
@@ -325,16 +325,24 @@ All three nest the wait result under `data.wait`, so one client helper works aga
 any of them:
 
 ```json
-{ "success": true, "data": {
-  "sessionId": "28325fd3-caa7-4178-82bf-87dfebf0f464",
-  "status": "idle",
-  "limitPaused": false,
-  "wait": {
-    "signal": "stop", "until": ["stop", "idle", "exit"],
-    "timedOut": false, "immediate": false, "ended": false, "aborted": false,
-    "waitedMs": 8421, "timeoutMs": 60000
+{
+  "success": true,
+  "data": {
+    "sessionId": "28325fd3-caa7-4178-82bf-87dfebf0f464",
+    "status": "idle",
+    "limitPaused": false,
+    "wait": {
+      "signal": "stop",
+      "until": ["stop", "idle", "exit"],
+      "timedOut": false,
+      "immediate": false,
+      "ended": false,
+      "aborted": false,
+      "waitedMs": 8421,
+      "timeoutMs": 60000
+    }
   }
-}}
+}
 ```
 
 `POST .../input` returns the same `wait` object alongside `delivered`, `duplicate`,
@@ -348,21 +356,21 @@ redelivery (harmless, the turn it refers to may be long over), while with
 client that reads `delivered === false` as "duplicate" silently treats a failed send
 as a success.
 
-| Field | Type | Meaning |
-|-------|------|---------|
-| `wait.signal` | signal \| `null` | the signal that fired (`/wait` and `/input` only) |
-| `wait.until` | array of signals | what the server actually waited on, after narrowing the default set for the session's mode (`/wait` and `/input` only) |
-| `wait.matched` | boolean | the string appeared (`/wait-output` only) |
-| `wait.match` | string | the literal that was searched for (`/wait-output` only) |
-| `wait.snippet` | string \| `null` | bounded window of output around the match, blank runs collapsed for readability (`/wait-output` only) |
-| `wait.timedOut` | boolean | the wait hit its timeout. Still a `200` |
-| `wait.immediate` | boolean | the condition already held at call time, so nothing was waited for (`waitedMs` is 0) |
-| `wait.ended` | boolean | the session went away (deleted or torn down) before the condition was met |
-| `wait.aborted` | boolean | the client hung up, so the waiter was released without resolving — and by that definition a client never reads `true`. When the **server** abandons a wait itself (send-and-wait against a session with no PTY), it answers in about a millisecond with `ended: true`, `delivered: false`, `duplicate: false` and `aborted: false`: `delivered`/`ended` carry that story, and `aborted` stays the transport flag. Present for completeness; treat a `true` as "this wait answered nothing", never as an outcome |
-| `wait.waitedMs` | number | wall-clock ms actually spent waiting |
-| `wait.timeoutMs` | number | the timeout **after clamping**, which is what was applied |
-| `status` | `SessionStatus` | the session's status after the wait, so a caller that timed out still learns where things stand |
-| `limitPaused` | boolean | the session is paused on a usage limit and will emit nothing until its reset, so a timeout here is expected rather than a stall worth retrying hard |
+| Field            | Type             | Meaning                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| ---------------- | ---------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `wait.signal`    | signal \| `null` | the signal that fired (`/wait` and `/input` only)                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| `wait.until`     | array of signals | what the server actually waited on, after narrowing the default set for the session's mode (`/wait` and `/input` only)                                                                                                                                                                                                                                                                                                                                                                                          |
+| `wait.matched`   | boolean          | the string appeared (`/wait-output` only)                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| `wait.match`     | string           | the literal that was searched for (`/wait-output` only)                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| `wait.snippet`   | string \| `null` | bounded window of output around the match, blank runs collapsed for readability (`/wait-output` only)                                                                                                                                                                                                                                                                                                                                                                                                           |
+| `wait.timedOut`  | boolean          | the wait hit its timeout. Still a `200`                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| `wait.immediate` | boolean          | the condition already held at call time, so nothing was waited for (`waitedMs` is 0)                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| `wait.ended`     | boolean          | the session went away (deleted or torn down) before the condition was met                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| `wait.aborted`   | boolean          | the client hung up, so the waiter was released without resolving — and by that definition a client never reads `true`. When the **server** abandons a wait itself (send-and-wait against a session with no PTY), it answers in about a millisecond with `ended: true`, `delivered: false`, `duplicate: false` and `aborted: false`: `delivered`/`ended` carry that story, and `aborted` stays the transport flag. Present for completeness; treat a `true` as "this wait answered nothing", never as an outcome |
+| `wait.waitedMs`  | number           | wall-clock ms actually spent waiting                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| `wait.timeoutMs` | number           | the timeout **after clamping**, which is what was applied                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| `status`         | `SessionStatus`  | the session's status after the wait, so a caller that timed out still learns where things stand                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| `limitPaused`    | boolean          | the session is paused on a usage limit and will emit nothing until its reset, so a timeout here is expected rather than a stall worth retrying hard                                                                                                                                                                                                                                                                                                                                                             |
 
 Read the outcome by discriminator, in this order:
 
@@ -385,12 +393,12 @@ read the timeout as "the worker is wedged" and kill a session that was working f
 
 ### Errors
 
-| `errorCode` | HTTP | When |
-|-------------|------|------|
-| `INVALID_INPUT` | 400 | unknown `until` / `wait` token; `stop` or `blocked` requested explicitly on a mode that installs no hooks (the message names the mode); `regex=` on `/wait-output`; `match` outside 1 to 200 chars; a non-numeric `timeout` |
-| `NOT_FOUND` | 404 | no such session, or one this caller does not own |
-| `SESSION_BUSY` | 409 | this session's waiter cap is full |
-| `RATE_LIMITED` | 429 | a per-owner or process-wide waiter cap is full. Retry later; the session you named is not the problem |
+| `errorCode`     | HTTP | When                                                                                                                                                                                                                        |
+| --------------- | ---- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `INVALID_INPUT` | 400  | unknown `until` / `wait` token; `stop` or `blocked` requested explicitly on a mode that installs no hooks (the message names the mode); `regex=` on `/wait-output`; `match` outside 1 to 200 chars; a non-numeric `timeout` |
+| `NOT_FOUND`     | 404  | no such session, or one this caller does not own                                                                                                                                                                            |
+| `SESSION_BUSY`  | 409  | this session's waiter cap is full                                                                                                                                                                                           |
+| `RATE_LIMITED`  | 429  | a per-owner or process-wide waiter cap is full. Retry later; the session you named is not the problem                                                                                                                       |
 
 The two capacity codes are deliberately different. A process-wide cap reported as
 `SESSION_BUSY` would tell the caller to switch sessions, which cannot help. The
@@ -441,9 +449,9 @@ Design: [`approvals-inbox-plan.md`](approvals-inbox-plan.md).
 
 - `GET /api/v1/approvals` → `{ approvals: ApprovalItem[] }`, oldest first,
   ownership-scoped in multi-user mode. `ApprovalItem`: `{ id, sessionId,
-  sessionName, kind: 'permission'|'question'|'idle', createdAt, toolName?,
-  toolSummary?, message?, cwd?, context?, options?: {n, label}[],
-  acknowledgedAt? }`. `context` is the ANSI-stripped visible pane frame;
+sessionName, kind: 'permission'|'question'|'idle', createdAt, toolName?,
+toolSummary?, message?, cwd?, context?, options?: {n, label}[],
+acknowledgedAt? }`. `context` is the ANSI-stripped visible pane frame;
   `options` is present only when the dialog's numbered choices parsed
   confidently; `acknowledgedAt` marks an item a human has already looked at
   (see `/viewed` below) and tells clients not to re-arm its tab alert. Listing
@@ -461,7 +469,7 @@ Design: [`approvals-inbox-plan.md`](approvals-inbox-plan.md).
   first, `422 OPERATION_FAILED` when the session refused input.
 - `POST /api/v1/approvals/:id/dismiss` removes the item without keystrokes.
 - `POST /api/v1/approvals/session/:sessionId/viewed` → `{ sessionId,
-  acknowledged: itemId | null }`. Marks the session's pending **idle** item as
+acknowledged: itemId | null }`. Marks the session's pending **idle** item as
   seen by a human (the web UI calls it when you open the session's tab): the
   item stays pending and answerable, but stops arming the yellow tab alert on
   every client, including after a reload. Permission/question items are never
@@ -486,7 +494,7 @@ user guide: [`readmymind.md`](readmymind.md).
 
 - `GET /api/v1/sessions/:id/intent` -> `{ intent: IntentProfile }` for the
   session's case. `IntentProfile`: `{ key, workingDir, updatedAt, goals,
-  recentPrompts: { ts, sessionId, text }[] }` (prompts oldest first, FIFO cap
+recentPrompts: { ts, sessionId, text }[] }` (prompts oldest first, FIFO cap
   50, each <= 500 chars). A case with nothing recorded answers an empty
   profile with `updatedAt: 0`; nothing is persisted by reads.
 - `PUT /api/v1/sessions/:id/intent` with `{ goals }` (<= 8192 chars, strict
@@ -519,7 +527,7 @@ same speech-to-text service the CLI's own `/voice` mode uses. Gated on the synce
 [`claude-voice-plan.md`](claude-voice-plan.md).
 
 - `GET /api/v1/voice/status` -> `{ available, reason?, subscriptionType?,
-  expiresAt? }`. `reason` is `disabled` (setting off), `no-credentials` (nobody
+expiresAt? }`. `reason` is `disabled` (setting off), `no-credentials` (nobody
   signed in to Claude Code on the server), `expired` (the access token elapsed;
   running any Claude session refreshes it) or `malformed`. The OAuth token
   itself is never returned by this or any other endpoint.
@@ -539,6 +547,43 @@ Optional HTTP Basic (`CODEMAN_USERNAME`/`CODEMAN_PASSWORD`) → opaque
 `codeman_session` cookie. When enabled, unauthenticated requests get
 `401 UNAUTHORIZED`; rate-limited requests get `429 RATE_LIMITED`. See
 [`security-architecture.md`](security-architecture.md).
+
+## External event integrations
+
+External integrations are registered service credentials, separate from
+Codeman users. Registry management is admin-only:
+
+- `POST /api/v1/integrations` with `{ id, label, owner?, eventTypes[] }` returns
+  safe integration metadata plus the signing secret once.
+- `GET /api/v1/integrations` lists metadata without secrets.
+- `POST /api/v1/integrations/:id/rotate` returns replacement metadata plus a new
+  secret once.
+- `DELETE /api/v1/integrations/:id` revokes the integration.
+
+The inbound webhook is:
+
+```text
+POST /api/v1/integrations/:id/events
+X-Codeman-Timestamp: <unix seconds>
+X-Codeman-Signature: v1=<hex hmac-sha256 of "timestamp.raw-body">
+```
+
+The JSON body is a versioned, typed event. The initial accepted types are
+`job.updated`, `job.completed`, and `job.failed`; all three require an opaque
+`boxm://job_...` subject. Event IDs are deduplicated per integration. A valid
+new event returns `202`; an already accepted event returns `200` with
+`duplicate: true`. Events outside the five-minute timestamp window or with an
+invalid signature return `401`.
+
+Accepted events are durably retained in a bounded inbox and update the current
+job projection. Recovery reads are available through:
+
+- `GET /api/v1/integrations/jobs`
+- `GET /api/v1/integrations/events?limit=100`
+
+The projection is broadcast through the stable SSE names
+`integration:jobUpdated`, `integration:jobCompleted`, and
+`integration:jobFailed`. Callers cannot choose arbitrary SSE event names.
 
 ## SSE event channel
 

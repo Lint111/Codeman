@@ -109,6 +109,15 @@ function checkHookSecretBypass(
 }
 
 /**
+ * External integrations authenticate at the route with their own HMAC secret.
+ * This bypass only skips Basic/session auth for the exact webhook shape; host,
+ * origin, rate, body, integration, timestamp, and signature checks still apply.
+ */
+function isExternalEventIngress(req: FastifyRequest): boolean {
+  return req.method === 'POST' && /^\/api\/integrations\/[^/]+\/events(?:\?|$)/.test(req.url ?? '');
+}
+
+/**
  * Requests that a `mustChangePassword` user may still reach: the identity probe,
  * the password-change endpoint, and any non-API path (static assets / index.html,
  * so the browser can load the app and render the change-password modal).
@@ -286,6 +295,11 @@ export function registerAuthMiddleware(app: FastifyInstance, https: boolean): Au
     }
     if (bypass === 'rejected') return;
 
+    if (isExternalEventIngress(req)) {
+      done();
+      return;
+    }
+
     // QR auth path — handled by the route itself (token validation + rate limiting)
     if (req.url?.startsWith('/q/')) {
       done();
@@ -424,6 +438,8 @@ function registerMultiUserAuthHook(
   app.addHook('onRequest', async (req, reply) => {
     const bypass = checkHookSecretBypass(req, reply, hookSecretFailures);
     if (bypass === 'bypass' || bypass === 'rejected') return;
+
+    if (isExternalEventIngress(req)) return;
 
     // QR redemption path — handled by the route itself.
     if (req.url?.startsWith('/q/')) return;

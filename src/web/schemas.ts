@@ -417,6 +417,81 @@ export const StatusTelemetrySchema = z.object({
     .nullish(),
 });
 
+const externalIntegrationEventTypeSchema = z
+  .string()
+  .regex(/^[a-z][a-z0-9]*(?:\.[a-z][a-z0-9]*){1,3}$/, 'Event type must be a dotted lowercase name');
+
+export const ExternalEventIntegrationCreateSchema = z
+  .object({
+    id: z.string().regex(/^[a-z0-9][a-z0-9_-]{0,63}$/),
+    label: z.string().trim().min(1).max(120),
+    owner: z
+      .string()
+      .regex(/^[a-zA-Z0-9_.-]{1,128}$/)
+      .optional(),
+    eventTypes: z
+      .array(externalIntegrationEventTypeSchema)
+      .min(1)
+      .max(32)
+      .refine((types) => new Set(types).size === types.length, 'eventTypes must be unique'),
+  })
+  .strict();
+
+const externalJobStatusSchema = z.enum([
+  'queued',
+  'running',
+  'completed',
+  'failed',
+  'cancelled',
+  'cancellation_requested',
+  'unknown',
+]);
+
+export const ExternalJobEventSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    eventId: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/),
+    type: z.enum(['job.updated', 'job.completed', 'job.failed']),
+    occurredAt: z.string().datetime({ offset: true }),
+    subject: z
+      .object({ kind: z.literal('external-job'), id: z.string().regex(/^boxm:\/\/job_[A-Za-z0-9]+$/) })
+      .strict(),
+    correlation: z
+      .object({
+        taskRef: z
+          .string()
+          .regex(/^task:\/\/task_[A-Za-z0-9]+$/)
+          .optional(),
+        workspace: z.string().min(1).max(256).optional(),
+      })
+      .strict()
+      .optional(),
+    sequence: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
+    state: z
+      .object({
+        status: externalJobStatusSchema,
+        provider: z
+          .string()
+          .regex(/^[a-z0-9._-]{1,64}$/)
+          .optional(),
+        usageClass: z
+          .string()
+          .regex(/^[a-z0-9._-]{1,64}$/)
+          .optional(),
+        phase: z
+          .string()
+          .regex(/^[a-z0-9._-]{1,64}$/)
+          .optional(),
+        artifactRefs: z
+          .array(z.string().regex(/^(?:artifact|log):\/\/[A-Za-z0-9._:/-]{1,512}$/))
+          .max(16)
+          .optional(),
+        exitCode: z.number().int().min(-128).max(255).optional(),
+      })
+      .strict(),
+  })
+  .strict();
+
 // ========== Case Routes ==========
 
 /**
