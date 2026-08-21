@@ -14,3 +14,11 @@ Quick pointers:
 - Route tests use `app.inject()`; new tests needing ports must pick a unique `const PORT =`
 - Branch off `master` for all work; Conventional Commit-style messages (`fix(mobile): ...`)
 - Never commit secrets or local state from `~/.codeman/`
+
+## Codexless Pipeline
+
+Read [`skills/codexless-pipeline/SKILL.md`](skills/codexless-pipeline/SKILL.md)
+before changing the external integration registry, webhook, SSE projections, or
+External Jobs panel. Keep Codexless jobs separate from native Codeman sessions;
+the integration is an authenticated, durable projection channel, not a generic
+event broadcast mechanism.
